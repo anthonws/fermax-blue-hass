@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fermax Blue Login",
+        "description": "Enter your Fermax Blue app credentials.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials. Please check your email and password.",
+      "cannot_connect": "Unable to connect to Fermax Blue servers.",
+      "no_devices": "No paired devices found on this account."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Connection"
+      },
+      "doorbell": {
+        "name": "Doorbell"
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Door"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Visitor"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "WiFi signal"
+      },
+      "status": {
+        "name": "Status"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Open door"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Doorbell notifications"
+      }
+    }
+  }
+}
