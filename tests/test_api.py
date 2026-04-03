@@ -1,6 +1,6 @@
 """Tests for the Fermax Blue API client."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
