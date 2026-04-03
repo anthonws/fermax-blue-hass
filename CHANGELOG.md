@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1] - 2026-04-04
+
+### Fixed
+- Resolve blocking I/O warnings in HA event loop (SSL cert loading, file reads)
+- Use persistent HTTP client instead of creating one per request
+- Use `asyncio.to_thread` for credential file I/O operations
+- Properly close HTTP client on integration unload
+
+### Changed
+- Switch to Fermax notification API v2 for push token registration
+- Add dedicated user setup guide for doorbell notifications
+
 ## [0.1.0] - 2026-04-03
 
 ### Added
