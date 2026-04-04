@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN
 from .coordinator import FermaxBlueCoordinator
 from .entity import FermaxBlueEntity
 
 _LOGGER = logging.getLogger(__name__)
+
+AUTO_LOCK_SECONDS = 5
 
 
 async def async_setup_entry(
@@ -49,13 +53,14 @@ class FermaxDoorLock(FermaxBlueEntity, LockEntity):
         self._attr_unique_id = f"{self._device_id}_{door_name}_lock"
         self._attr_name = door_title or door_name
         self._is_locked = True
+        self._auto_lock_unsub: CALLBACK_TYPE | None = None
 
     @property
     def is_locked(self) -> bool:
         """Return True if the door is locked."""
         return self._is_locked
 
-    async def async_unlock(self, **kwargs) -> None:
+    async def async_unlock(self, **kwargs: Any) -> None:
         """Unlock (open) the door."""
         success = await self.coordinator.open_door(self._door_name)
         if success:
@@ -63,19 +68,22 @@ class FermaxDoorLock(FermaxBlueEntity, LockEntity):
             self.async_write_ha_state()
             _LOGGER.info("Door %s opened", self._door_name)
 
-            # Auto-lock after 5 seconds (door closes automatically)
-            import asyncio
+            if self._auto_lock_unsub:
+                self._auto_lock_unsub()
 
-            async def auto_lock():
-                await asyncio.sleep(5)
+            @callback
+            def _auto_lock(_now: Any) -> None:
                 self._is_locked = True
                 self.async_write_ha_state()
+                self._auto_lock_unsub = None
 
-            self.hass.async_create_task(auto_lock())
+            self._auto_lock_unsub = async_call_later(
+                self.hass, AUTO_LOCK_SECONDS, _auto_lock
+            )
         else:
             _LOGGER.error("Failed to open door %s", self._door_name)
 
-    async def async_lock(self, **kwargs) -> None:
+    async def async_lock(self, **kwargs: Any) -> None:
         """Lock the door (no-op, doors auto-lock)."""
         self._is_locked = True
         self.async_write_ha_state()

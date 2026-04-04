@@ -7,7 +7,7 @@ from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant
 
 from .api import FermaxBlueApi
 from .const import DOMAIN, PLATFORMS
@@ -25,8 +25,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
         entry.data[CONF_PASSWORD],
     )
 
-    await api.authenticate()
-    pairings = await api.get_pairings()
+    try:
+        await api.authenticate()
+        pairings = await api.get_pairings()
+    except Exception:
+        await api.close()
+        raise
 
     coordinators: list[FermaxBlueCoordinator] = []
 
@@ -34,7 +38,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
         coordinator = FermaxBlueCoordinator(hass, api, pairing)
         await coordinator.async_config_entry_first_refresh()
 
-        # Set up FCM notifications
         storage_path = Path(hass.config.config_dir) / ".storage" / DOMAIN
         storage_path.mkdir(parents=True, exist_ok=True)
         await coordinator.setup_notifications(storage_path)
@@ -46,8 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    @callback
-    async def _async_shutdown(event):
+    async def _async_shutdown(event: Event) -> None:
         """Clean up on shutdown."""
         for coordinator in coordinators:
             await coordinator.stop_notifications()

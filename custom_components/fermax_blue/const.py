@@ -49,10 +49,6 @@ APP_HEADERS = {
     "app-build": "3",
 }
 
-# Config entry keys
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-
 # Signal dispatchers
 SIGNAL_DOORBELL_RING = f"{DOMAIN}_doorbell_ring_{{}}_{{}}"
 SIGNAL_CALL_ENDED = f"{DOMAIN}_call_ended_{{}}"
