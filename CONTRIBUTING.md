@@ -72,37 +72,44 @@ docs/installation-guide
 
 ### Prerequisites
 
-- Python 3.12+
-- A Fermax Blue account with a paired device
+- Docker (all tools run in containers, no local Python dependencies needed)
+- A Fermax Blue account with a paired device (for integration testing)
 
-### Install Dependencies
-
-```bash
-pip install -e ".[dev]"
-```
-
-### Running Tests
+### Quick Start
 
 ```bash
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ -v --cov=custom_components/fermax_blue --cov-report=term-missing
-
-# Run a specific test file
-pytest tests/test_api.py -v
-
-# Run a specific test
-pytest tests/test_api.py::TestAuthentication::test_successful_auth -v
+# Run ALL checks (lint + format + typecheck + tests) — same as CI
+make check
 ```
 
-### Linting
+### Available Commands
+
+All commands use Docker (`python:3.12-slim`), so your local environment stays clean:
 
 ```bash
-pip install ruff
-ruff check custom_components/ tests/
+make lint          # Ruff linting (E, W, F, I, N, UP, B, SIM, RUF, PT, etc.)
+make format        # Auto-format code with ruff
+make format-check  # Verify formatting without changes (CI mode)
+make typecheck     # Mypy type checking
+make test          # Pytest with coverage report
+make check         # Run ALL of the above in sequence
 ```
+
+### Running a Specific Test
+
+```bash
+docker run --rm -v $(pwd):/app -w /app python:3.12-slim sh -c \
+  "pip install -q pytest pytest-asyncio httpx firebase-messaging homeassistant && \
+   pytest tests/test_api.py::TestAutoOn::test_auto_on_success -v"
+```
+
+### CI Pipeline
+
+Every push and PR runs 4 jobs in GitHub Actions:
+- **test** — Pytest on Python 3.12 + 3.13 with coverage
+- **lint** — Ruff check + format verification
+- **type-check** — Mypy strict type checking
+- **validate** — HACS integration validation
 
 ## Reporting Issues
 
