@@ -166,21 +166,20 @@ The visitor camera only shows photos captured when someone rings the doorbell. I
 
 ## Development
 
+All development tools run via Docker — no local Python dependencies needed. Only Docker is required.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
+# Run all checks (lint + format + type-check + tests)
+make check
 
-# Run tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ -v --cov=custom_components/fermax_blue --cov-report=term-missing
-
-# Lint
-pip install ruff
-ruff check custom_components/ tests/
+# Individual commands
+make lint          # Ruff linting
+make format        # Auto-format code
+make format-check  # Verify formatting (CI mode)
+make typecheck     # Mypy type checking
+make test          # Pytest with coverage
 ```
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/).
