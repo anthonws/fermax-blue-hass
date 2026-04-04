@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import dispatcher_send
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import DeviceInfo, DivertResponse, FermaxBlueApi, Pairing
+from .api import (
+    DeviceInfo,
+    DivertResponse,
+    FermaxApiError,
+    FermaxAuthError,
+    FermaxBlueApi,
+    Pairing,
+)
 from .const import DOMAIN, SIGNAL_CALL_ENDED, SIGNAL_DOORBELL_RING
 from .notification import FermaxNotificationListener
 
 _LOGGER = logging.getLogger(__name__)
 
 UPDATE_INTERVAL = timedelta(minutes=5)
+DOORBELL_RESET_SECONDS = 30
+CAMERA_TIMEOUT_SECONDS = 90
 
 
 class FermaxBlueCoordinator(DataUpdateCoordinator):
@@ -46,6 +55,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._camera_active: bool = False
         self._last_divert_response: DivertResponse | None = None
         self._photo_fetch_pending: bool = False
+        self._doorbell_reset_unsub: CALLBACK_TYPE | None = None
+        self._camera_timeout_unsub: CALLBACK_TYPE | None = None
 
     @property
     def last_photo(self) -> bytes | None:
@@ -69,7 +80,13 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         Call log and photos are only fetched after a doorbell ring event
         to minimize unnecessary API requests.
         """
-        device_info = await self.api.get_device_info(self.pairing.device_id)
+        try:
+            device_info = await self.api.get_device_info(self.pairing.device_id)
+        except (FermaxAuthError, FermaxApiError) as err:
+            raise UpdateFailed(f"Error fetching device info: {err}") from err
+        except Exception as err:
+            raise UpdateFailed(f"Unexpected error: {err}") from err
+
         self.device_info = device_info
 
         # Only fetch call log/photos after a doorbell ring (not every poll)
@@ -151,17 +168,24 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             SIGNAL_DOORBELL_RING.format(self.pairing.device_id, door_key),
         )
 
-        # Auto-reset ringing state after 30 seconds
-        async def reset_ringing():
-            await asyncio.sleep(30)
+        # Cancel previous reset timer if still pending
+        if self._doorbell_reset_unsub:
+            self._doorbell_reset_unsub()
+
+        @callback
+        def _reset_ringing(_now: Any) -> None:
+            """Reset doorbell ringing state."""
             self._doorbell_ringing = False
             dispatcher_send(
                 self.hass,
                 SIGNAL_CALL_ENDED.format(self.pairing.device_id),
             )
             self.async_set_updated_data(self.data)
+            self._doorbell_reset_unsub = None
 
-        self.hass.async_create_task(reset_ringing())
+        self._doorbell_reset_unsub = async_call_later(
+            self.hass, DOORBELL_RESET_SECONDS, _reset_ringing
+        )
 
         # Trigger a data refresh to get any new photos
         self.hass.async_create_task(self.async_request_refresh())
@@ -170,7 +194,6 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """Open a specific door."""
         door = self.pairing.access_doors.get(door_name)
         if not door:
-            # Try first visible door
             for d in self.pairing.access_doors.values():
                 if d.visible:
                     door = d
@@ -183,11 +206,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         return await self.api.open_door(self.pairing.device_id, door.access_id)
 
     async def start_camera_preview(self) -> DivertResponse | None:
-        """Start camera preview (auto-on) to view the intercom camera.
-
-        This initiates a video stream from the intercom without requiring
-        a doorbell ring. The stream parameters will arrive via push notification.
-        """
+        """Start camera preview (auto-on) to view the intercom camera."""
         if not self.notification_listener or not self.notification_listener.fcm_token:
             _LOGGER.error("Cannot start camera: no FCM token available")
             return None
@@ -206,13 +225,20 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 result.description,
             )
 
-            # Auto-deactivate after 90 seconds (matching app behavior)
-            async def deactivate_camera():
-                await asyncio.sleep(90)
+            # Cancel previous camera timeout if still pending
+            if self._camera_timeout_unsub:
+                self._camera_timeout_unsub()
+
+            @callback
+            def _deactivate_camera(_now: Any) -> None:
+                """Deactivate camera after timeout."""
                 self._camera_active = False
                 self.async_set_updated_data(self.data)
+                self._camera_timeout_unsub = None
 
-            self.hass.async_create_task(deactivate_camera())
+            self._camera_timeout_unsub = async_call_later(
+                self.hass, CAMERA_TIMEOUT_SECONDS, _deactivate_camera
+            )
             self.async_set_updated_data(self.data)
 
         return result

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
@@ -49,14 +50,14 @@ class FermaxNotificationSwitch(FermaxBlueEntity, SwitchEntity):
             return self.coordinator.notification_listener.is_started
         return self._is_on
 
-    async def async_turn_on(self, **kwargs) -> None:
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable notifications."""
         if self.coordinator.notification_listener:
             await self.coordinator.notification_listener.start()
             self._is_on = True
             self.async_write_ha_state()
 
-    async def async_turn_off(self, **kwargs) -> None:
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable notifications."""
         if self.coordinator.notification_listener:
             await self.coordinator.notification_listener.stop()

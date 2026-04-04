@@ -39,6 +39,7 @@ class FermaxBlueConfigFlow(ConfigFlow, domain=DOMAIN):
                 user_input[CONF_PASSWORD],
             )
 
+            pairings = []
             try:
                 await api.authenticate()
                 pairings = await api.get_pairings()
@@ -47,7 +48,10 @@ class FermaxBlueConfigFlow(ConfigFlow, domain=DOMAIN):
             except Exception:
                 _LOGGER.exception("Unexpected error during authentication")
                 errors["base"] = "cannot_connect"
-            else:
+            finally:
+                await api.close()
+
+            if not errors:
                 if not pairings:
                     errors["base"] = "no_devices"
                 else:

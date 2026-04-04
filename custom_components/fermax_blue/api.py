@@ -276,7 +276,7 @@ class FermaxBlueApi:
             if image_data:
                 return base64.b64decode(image_data)
         except Exception:
-            pass
+            _LOGGER.debug("Failed to decode call photo", exc_info=True)
         return None
 
     async def auto_on(self, device_id: str, fcm_token: str) -> DivertResponse | None:
