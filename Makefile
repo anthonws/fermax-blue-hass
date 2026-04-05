@@ -1,29 +1,31 @@
-DOCKER_IMG = python:3.12-slim
-DOCKER_RUN = docker run --rm -v $(PWD):/app -w /app $(DOCKER_IMG)
-DOCKER_DEPS = pip install -q ruff mypy pytest pytest-asyncio pytest-cov httpx firebase-messaging homeassistant 2>/dev/null
+DEV_IMG = fermax-blue-dev
+DEV_RUN = docker run --rm -v $(PWD):/app -w /app $(DEV_IMG)
 
-.PHONY: lint format format-check typecheck test check cli pre-push
+.PHONY: lint format format-check typecheck test check cli pre-push dev-image
 
-lint:
-	$(DOCKER_RUN) sh -c "pip install -q ruff 2>/dev/null && ruff check custom_components/ tests/"
+dev-image:
+	@docker build -q -t $(DEV_IMG) -f Dockerfile.dev . > /dev/null
 
-format:
-	$(DOCKER_RUN) sh -c "pip install -q ruff 2>/dev/null && ruff format custom_components/ tests/"
+lint: dev-image
+	$(DEV_RUN) ruff check custom_components/ tests/ scripts/
 
-format-check:
-	$(DOCKER_RUN) sh -c "pip install -q ruff 2>/dev/null && ruff format --check custom_components/ tests/"
+format: dev-image
+	$(DEV_RUN) ruff format custom_components/ tests/ scripts/
 
-typecheck:
-	$(DOCKER_RUN) sh -c "$(DOCKER_DEPS) && mypy custom_components/fermax_blue/ --ignore-missing-imports"
+format-check: dev-image
+	$(DEV_RUN) ruff format --check custom_components/ tests/ scripts/
 
-test:
-	$(DOCKER_RUN) sh -c "$(DOCKER_DEPS) && pytest tests/ -v --cov=custom_components/fermax_blue --cov-report=term-missing --tb=short"
+typecheck: dev-image
+	$(DEV_RUN) mypy custom_components/fermax_blue/ --ignore-missing-imports
 
-check: lint format-check typecheck test
-	@echo "All checks passed"
+test: dev-image
+	$(DEV_RUN) pytest tests/ -v --cov=custom_components/fermax_blue --cov-report=term-missing --tb=short
 
-cli:
-	docker run --rm -it -v $(PWD):/app -w /app -e FERMAX_USER -e FERMAX_PASS python:3.12-slim sh -c "pip install -q httpx 2>/dev/null && python scripts/cli.py"
+check: dev-image
+	$(DEV_RUN) sh -c "ruff check custom_components/ tests/ scripts/ && ruff format --check custom_components/ tests/ scripts/ && mypy custom_components/fermax_blue/ --ignore-missing-imports && pytest tests/ -q --tb=short"
 
-pre-push:
+cli: dev-image
+	docker run --rm -it -v $(PWD):/app -w /app -e FERMAX_USER -e FERMAX_PASS $(DEV_IMG) python scripts/cli.py
+
+pre-push: dev-image
 	bash scripts/pre-push.sh
