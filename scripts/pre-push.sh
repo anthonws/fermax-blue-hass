@@ -1,5 +1,7 @@
 #!/bin/bash
-# Pre-push hook: replicates CI pipeline locally using pre-built dev image.
+# Pre-push hook: exact replica of GitHub Actions using the same Dockerfile.dev.
+# Single source of truth: Dockerfile.dev defines all deps, ARG PYTHON_VERSION for matrix.
+#
 # Install: cp scripts/pre-push.sh .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 # Or run: make pre-push
 
@@ -10,31 +12,43 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-DEV_IMG="fermax-blue-dev"
 PROJECT_DIR="$(git rev-parse --show-toplevel)"
-RUN="docker run --rm -v $PROJECT_DIR:/app -w /app"
+DEV_IMG="fermax-blue-dev"
 
 step() { echo -e "\n${YELLOW}▶ $1${NC}"; }
 pass() { echo -e "${GREEN}✓ $1${NC}"; }
 fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
 echo -e "${YELLOW}══════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}  Pre-push CI check                           ${NC}"
+echo -e "${YELLOW}  Pre-push CI replica (Dockerfile.dev)        ${NC}"
 echo -e "${YELLOW}══════════════════════════════════════════════${NC}"
 
-# Build dev image if needed (cached, instant if no changes)
-step "Ensuring dev image"
-docker build -q -t "$DEV_IMG" -f "$PROJECT_DIR/Dockerfile.dev" "$PROJECT_DIR" > /dev/null \
-    && pass "Dev image ready" || fail "Dev image build failed"
+for PY in 3.12 3.13; do
+    TAG="${DEV_IMG}:py${PY}"
+    step "Building image Python ${PY}"
+    docker build -q -t "$TAG" --build-arg PYTHON_VERSION="$PY" -f "$PROJECT_DIR/Dockerfile.dev" "$PROJECT_DIR" > /dev/null \
+        && pass "Image py${PY}" || fail "Image build py${PY}"
 
-# All checks in one container (fast: no pip install, no image pull)
-step "Lint + Format + Typecheck + Tests (Python 3.12)"
-$RUN "$DEV_IMG" sh -c "\
-    echo '  Lint...' && ruff check custom_components/ tests/ scripts/ && \
-    echo '  Format...' && ruff format --check custom_components/ tests/ scripts/ && \
-    echo '  Typecheck...' && mypy custom_components/fermax_blue/ --ignore-missing-imports && \
-    echo '  Tests...' && pytest tests/ -q --tb=short" \
-    && pass "All checks (3.12)" || fail "Checks failed on Python 3.12"
+    RUN="docker run --rm -v $PROJECT_DIR:/app -w /app $TAG"
+
+    if [ "$PY" = "3.12" ]; then
+        step "Lint (py${PY})"
+        $RUN ruff check custom_components/ tests/ scripts/ \
+            && pass "Lint" || fail "Lint"
+
+        step "Format (py${PY})"
+        $RUN ruff format --check custom_components/ tests/ scripts/ \
+            && pass "Format" || fail "Format — run 'make format'"
+
+        step "Type check (py${PY})"
+        $RUN mypy custom_components/fermax_blue/ --ignore-missing-imports \
+            && pass "Type check" || fail "Type check"
+    fi
+
+    step "Tests (py${PY})"
+    $RUN pytest tests/ -q --tb=short \
+        && pass "Tests py${PY}" || fail "Tests py${PY}"
+done
 
 echo -e "\n${GREEN}══════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  All checks passed — safe to push             ${NC}"
