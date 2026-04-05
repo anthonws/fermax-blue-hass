@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "تسجيل الدخول Fermax Blue",
+        "description": "أدخل بيانات حساب Fermax Blue.",
+        "data": {
+          "username": "البريد الإلكتروني",
+          "password": "كلمة المرور"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "بيانات غير صالحة. تحقق من بريدك وكلمة المرور.",
+      "cannot_connect": "تعذر الاتصال بخوادم Fermax Blue.",
+      "no_devices": "لم يتم العثور على أجهزة مقترنة."
+    },
+    "abort": {
+      "already_configured": "هذا الحساب مهيأ بالفعل."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "خيارات Fermax Blue",
+        "data": {
+          "scan_interval": "فترة الاستعلام (دقائق)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "الاتصال"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "جرس الباب",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "رنين"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "الباب"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "الزائر"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "إشارة WiFi"
+      },
+      "status": {
+        "name": "الحالة"
+      },
+      "last_opening": {
+        "name": "آخر فتح"
+      },
+      "last_call": {
+        "name": "آخر مكالمة"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "فتح الباب"
+      },
+      "camera_preview": {
+        "name": "معاينة الكاميرا"
+      },
+      "f1": {
+        "name": "F1 مساعد"
+      },
+      "call_guard": {
+        "name": "اتصل بالحارس"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "إشعارات الجرس"
+      },
+      "dnd": {
+        "name": "عدم الإزعاج"
+      },
+      "photo_caller": {
+        "name": "صورة الزائر"
+      }
+    }
+  }
+}

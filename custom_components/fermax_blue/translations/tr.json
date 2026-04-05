@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fermax Blue Giriş",
+        "description": "Fermax Blue hesap bilgilerinizi girin.",
+        "data": {
+          "username": "E-posta",
+          "password": "Şifre"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Geçersiz kimlik bilgileri. E-posta ve şifrenizi kontrol edin.",
+      "cannot_connect": "Fermax Blue sunucularına bağlanılamıyor.",
+      "no_devices": "Bu hesapta eşleştirilmiş cihaz bulunamadı."
+    },
+    "abort": {
+      "already_configured": "Bu hesap zaten yapılandırılmış."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fermax Blue Seçenekleri",
+        "data": {
+          "scan_interval": "Sorgulama aralığı (dakika)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Bağlantı"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Kapı zili",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Çalma"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Kapı"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Ziyaretçi"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "WiFi sinyali"
+      },
+      "status": {
+        "name": "Durum"
+      },
+      "last_opening": {
+        "name": "Son açılış"
+      },
+      "last_call": {
+        "name": "Son arama"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Kapıyı aç"
+      },
+      "camera_preview": {
+        "name": "Kamera önizleme"
+      },
+      "f1": {
+        "name": "F1 yardımcı"
+      },
+      "call_guard": {
+        "name": "Kapıcıyı ara"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Zil bildirimleri"
+      },
+      "dnd": {
+        "name": "Rahatsız etmeyin"
+      },
+      "photo_caller": {
+        "name": "Ziyaretçi fotoğrafı"
+      }
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fermax Blue Inloggen",
+        "description": "Voer uw Fermax Blue inloggegevens in.",
+        "data": {
+          "username": "E-mail",
+          "password": "Wachtwoord"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Ongeldige inloggegevens. Controleer uw e-mail en wachtwoord.",
+      "cannot_connect": "Kan geen verbinding maken met Fermax Blue servers.",
+      "no_devices": "Geen gekoppelde apparaten gevonden op dit account."
+    },
+    "abort": {
+      "already_configured": "Dit account is al geconfigureerd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fermax Blue Opties",
+        "data": {
+          "scan_interval": "Polling-interval (minuten)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Verbinding"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Deurbel",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Bel"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Deur"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Bezoeker"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "WiFi-signaal"
+      },
+      "status": {
+        "name": "Status"
+      },
+      "last_opening": {
+        "name": "Laatste opening"
+      },
+      "last_call": {
+        "name": "Laatste oproep"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Deur openen"
+      },
+      "camera_preview": {
+        "name": "Camera voorbeeld"
+      },
+      "f1": {
+        "name": "F1 hulpknop"
+      },
+      "call_guard": {
+        "name": "Portier bellen"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Deurbelmeldingen"
+      },
+      "dnd": {
+        "name": "Niet storen"
+      },
+      "photo_caller": {
+        "name": "Bezoeker foto"
+      }
+    }
+  }
+}

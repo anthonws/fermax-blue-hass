@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fermax Blue Anmeldung",
+        "description": "Geben Sie Ihre Fermax Blue Anmeldedaten ein.",
+        "data": {
+          "username": "E-Mail",
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Ungültige Anmeldedaten. Bitte E-Mail und Passwort prüfen.",
+      "cannot_connect": "Verbindung zu Fermax Blue Servern nicht möglich.",
+      "no_devices": "Keine verknüpften Geräte in diesem Konto gefunden."
+    },
+    "abort": {
+      "already_configured": "Dieses Konto ist bereits konfiguriert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fermax Blue Optionen",
+        "data": {
+          "scan_interval": "Abfrageintervall (Minuten)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Verbindung"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Türklingel",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Klingeln"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Tür"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Besucher"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "WLAN-Signal"
+      },
+      "status": {
+        "name": "Status"
+      },
+      "last_opening": {
+        "name": "Letzte Öffnung"
+      },
+      "last_call": {
+        "name": "Letzter Anruf"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Tür öffnen"
+      },
+      "camera_preview": {
+        "name": "Kameravorschau"
+      },
+      "f1": {
+        "name": "F1 Hilfstaste"
+      },
+      "call_guard": {
+        "name": "Pförtner rufen"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Klingelbenachrichtigungen"
+      },
+      "dnd": {
+        "name": "Nicht stören"
+      },
+      "photo_caller": {
+        "name": "Besucherfoto"
+      }
+    }
+  }
+}

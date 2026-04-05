@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Logowanie Fermax Blue",
+        "description": "Wprowadź dane logowania Fermax Blue.",
+        "data": {
+          "username": "E-mail",
+          "password": "Hasło"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Nieprawidłowe dane logowania. Sprawdź e-mail i hasło.",
+      "cannot_connect": "Nie można połączyć się z serwerami Fermax Blue.",
+      "no_devices": "Nie znaleziono sparowanych urządzeń na tym koncie."
+    },
+    "abort": {
+      "already_configured": "To konto jest już skonfigurowane."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opcje Fermax Blue",
+        "data": {
+          "scan_interval": "Interwał odpytywania (minuty)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Połączenie"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Dzwonek",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Dzwonienie"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Drzwi"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Odwiedzający"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "Sygnał WiFi"
+      },
+      "status": {
+        "name": "Status"
+      },
+      "last_opening": {
+        "name": "Ostatnie otwarcie"
+      },
+      "last_call": {
+        "name": "Ostatnie połączenie"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Otwórz drzwi"
+      },
+      "camera_preview": {
+        "name": "Podgląd kamery"
+      },
+      "f1": {
+        "name": "F1 pomocniczy"
+      },
+      "call_guard": {
+        "name": "Zadzwoń do portiera"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Powiadomienia dzwonka"
+      },
+      "dnd": {
+        "name": "Nie przeszkadzać"
+      },
+      "photo_caller": {
+        "name": "Zdjęcie odwiedzającego"
+      }
+    }
+  }
+}

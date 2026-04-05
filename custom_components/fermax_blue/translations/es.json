@@ -1,0 +1,100 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Acceso a Fermax Blue",
+        "description": "Introduce las credenciales de tu cuenta Fermax Blue.",
+        "data": {
+          "username": "Correo electrónico",
+          "password": "Contraseña"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Credenciales inválidas. Comprueba tu correo y contraseña.",
+      "cannot_connect": "No se puede conectar con los servidores de Fermax Blue.",
+      "no_devices": "No se encontraron dispositivos vinculados en esta cuenta."
+    },
+    "abort": {
+      "already_configured": "Esta cuenta ya está configurada."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opciones de Fermax Blue",
+        "data": {
+          "scan_interval": "Intervalo de consulta (minutos)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Conexión"
+      }
+    },
+    "event": {
+      "doorbell": {
+        "name": "Timbre",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Llamada"
+            }
+          }
+        }
+      }
+    },
+    "lock": {
+      "door": {
+        "name": "Puerta"
+      }
+    },
+    "camera": {
+      "visitor": {
+        "name": "Visitante"
+      }
+    },
+    "sensor": {
+      "wifi_signal": {
+        "name": "Señal WiFi"
+      },
+      "status": {
+        "name": "Estado"
+      },
+      "last_opening": {
+        "name": "Última apertura"
+      },
+      "last_call": {
+        "name": "Última llamada"
+      }
+    },
+    "button": {
+      "open_door": {
+        "name": "Abrir puerta"
+      },
+      "camera_preview": {
+        "name": "Ver cámara"
+      },
+      "f1": {
+        "name": "F1 auxiliar"
+      },
+      "call_guard": {
+        "name": "Llamar portero"
+      }
+    },
+    "switch": {
+      "notifications": {
+        "name": "Notificaciones del timbre"
+      },
+      "dnd": {
+        "name": "No molestar"
+      },
+      "photo_caller": {
+        "name": "Foto de visitante"
+      }
+    }
+  }
+}

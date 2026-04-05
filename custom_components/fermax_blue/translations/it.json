@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "Fermax Blue Login",
-        "description": "Enter your Fermax Blue app credentials.",
+        "title": "Accesso Fermax Blue",
+        "description": "Inserisci le credenziali del tuo account Fermax Blue.",
         "data": {
           "username": "Email",
           "password": "Password"
@@ -11,20 +11,20 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid credentials. Please check your email and password.",
-      "cannot_connect": "Unable to connect to Fermax Blue servers.",
-      "no_devices": "No paired devices found on this account."
+      "invalid_auth": "Credenziali non valide. Controlla email e password.",
+      "cannot_connect": "Impossibile connettersi ai server Fermax Blue.",
+      "no_devices": "Nessun dispositivo associato trovato su questo account."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "Questo account è già configurato."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Fermax Blue Options",
+        "title": "Opzioni Fermax Blue",
         "data": {
-          "scan_interval": "Polling interval (minutes)"
+          "scan_interval": "Intervallo di polling (minuti)"
         }
       }
     }
@@ -32,16 +32,16 @@
   "entity": {
     "binary_sensor": {
       "connection": {
-        "name": "Connection"
+        "name": "Connessione"
       }
     },
     "event": {
       "doorbell": {
-        "name": "Doorbell",
+        "name": "Campanello",
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "Ring"
+              "ring": "Suonata"
             }
           }
         }
@@ -49,51 +49,51 @@
     },
     "lock": {
       "door": {
-        "name": "Door"
+        "name": "Porta"
       }
     },
     "camera": {
       "visitor": {
-        "name": "Visitor"
+        "name": "Visitatore"
       }
     },
     "sensor": {
       "wifi_signal": {
-        "name": "WiFi signal"
+        "name": "Segnale WiFi"
       },
       "status": {
-        "name": "Status"
+        "name": "Stato"
       },
       "last_opening": {
-        "name": "Last door opening"
+        "name": "Ultima apertura"
       },
       "last_call": {
-        "name": "Last call"
+        "name": "Ultima chiamata"
       }
     },
     "button": {
       "open_door": {
-        "name": "Open door"
+        "name": "Apri porta"
       },
       "camera_preview": {
-        "name": "Camera preview"
+        "name": "Anteprima telecamera"
       },
       "f1": {
-        "name": "F1 auxiliary"
+        "name": "F1 ausiliario"
       },
       "call_guard": {
-        "name": "Call guard"
+        "name": "Chiama portiere"
       }
     },
     "switch": {
       "notifications": {
-        "name": "Doorbell notifications"
+        "name": "Notifiche campanello"
       },
       "dnd": {
-        "name": "Do not disturb"
+        "name": "Non disturbare"
       },
       "photo_caller": {
-        "name": "Photo caller"
+        "name": "Foto visitatore"
       }
     }
   }
