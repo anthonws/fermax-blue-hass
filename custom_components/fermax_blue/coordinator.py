@@ -130,6 +130,14 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             except Exception:
                 _LOGGER.debug("Failed to fetch call log/photo", exc_info=True)
 
+        # Fetch latest door opening (1 API call, lightweight)
+        try:
+            openings = await self.api.get_opening_history(self.pairing.device_id)
+            if openings:
+                self._last_opening = openings[0]
+        except Exception:
+            _LOGGER.debug("Failed to fetch opening history", exc_info=True)
+
         return {
             "device_id": device_info.device_id,
             "connection_state": device_info.connection_state,
