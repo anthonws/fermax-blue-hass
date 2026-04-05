@@ -403,7 +403,7 @@ class FermaxStreamSession:
             else consume_result.rtp_parameters,
         )
 
-        # 5. Signal pickup to keep the call alive
+        # 5. Signal pickup to extend stream duration
         device_caps_json = json.dumps(device_caps.dict(exclude_none=True))
         await self._signaling.pickup(
             kind="video",
