@@ -192,32 +192,37 @@ class TestOpeningsApi:
         resp = _mock_response(
             200,
             json={
-                "entries": [
+                "openDoorRegistry": [
                     {
-                        "timestamp": "2024-01-01T10:00:00",
-                        "user": "John",
-                        "door": "Main",
+                        "id": "abc",
+                        "email": "user@test.com",
+                        "instant": "2024-01-01T10:00:00Z",
+                        "accessName": "G",
+                        "accessType": "GENERAL",
                         "guestEmail": None,
                     },
                     {
-                        "timestamp": "2024-01-01T11:00:00",
-                        "user": "Jane",
-                        "door": "Side",
+                        "id": "def",
+                        "email": "guest@test.com",
+                        "instant": "2024-01-01T11:00:00Z",
+                        "accessName": "G",
+                        "accessType": "GENERAL",
                         "guestEmail": "guest@test.com",
                     },
                 ]
             },
         )
         with patch("httpx.AsyncClient.get", return_value=resp):
-            result = await authenticated_api.get_opening_history("dev1", "user1")
+            result = await authenticated_api.get_opening_history("dev1")
         assert len(result) == 2
         assert isinstance(result[0], OpeningRecord)
-        assert result[0].user == "John"
+        assert result[0].user == "user@test.com"
+        assert result[0].timestamp == "2024-01-01T10:00:00Z"
         assert result[1].guest_email == "guest@test.com"
 
     @pytest.mark.asyncio
     async def test_get_openings_empty(self, authenticated_api):
-        resp = _mock_response(200, json={"entries": []})
+        resp = _mock_response(200, json={"openDoorRegistry": []})
         with patch("httpx.AsyncClient.get", return_value=resp):
-            result = await authenticated_api.get_opening_history("dev1", "user1")
+            result = await authenticated_api.get_opening_history("dev1")
         assert result == []

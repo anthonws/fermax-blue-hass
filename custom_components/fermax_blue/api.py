@@ -477,25 +477,24 @@ class FermaxBlueApi:
             params={"value": "true" if enabled else "false"},
         )
 
-    async def get_opening_history(
-        self, device_id: str, user_id: str
-    ) -> list[OpeningRecord]:
+    async def get_opening_history(self, device_id: str) -> list[OpeningRecord]:
         """Get door opening history."""
         try:
             response = await self._api_get(
                 "/rexistro/api/v1/opendoorregistry",
-                params={"deviceId": device_id, "userId": user_id},
+                params={"deviceId": device_id},
             )
         except Exception:
             _LOGGER.debug("Failed to get opening history", exc_info=True)
             return []
 
-        entries = response.json().get("entries", [])
+        data = response.json()
+        entries = data.get("openDoorRegistry", [])
         return [
             OpeningRecord(
-                timestamp=entry["timestamp"],
-                user=entry["user"],
-                door=entry["door"],
+                timestamp=entry.get("instant", ""),
+                user=entry.get("email", ""),
+                door=entry.get("accessName", entry.get("accessType", "")),
                 guest_email=entry.get("guestEmail"),
             )
             for entry in entries
