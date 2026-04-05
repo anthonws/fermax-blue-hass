@@ -16,99 +16,36 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov httpx firebase-messaging
-          pip install homeassistant
+      - name: Build dev image (Python ${{ matrix.python-version }})
+        run: docker build -t fermax-blue-dev --build-arg PYTHON_VERSION=${{ matrix.python-version }} -f Dockerfile.dev .
 
       - name: Run tests
-        run: |
-          pytest tests/ -v --cov=custom_components/fermax_blue --cov-report=term-missing --tb=short --junit-xml=test-results.xml
-
-      - name: Test summary
-        if: always()
-        env:
-          PY_VERSION: ${{ matrix.python-version }}
-        run: |
-          python << 'PYEOF'
-          import os, xml.etree.ElementTree as ET
-
-          tree = ET.parse("test-results.xml")
-          root = tree.getroot()
-
-          tests = failures = errors = 0
-          time_taken = 0.0
-          for suite in root.iter("testsuite"):
-              tests += int(suite.attrib.get("tests", 0))
-              failures += int(suite.attrib.get("failures", 0))
-              errors += int(suite.attrib.get("errors", 0))
-              time_taken += float(suite.attrib.get("time", 0))
-
-          passed = tests - failures - errors
-          icon = ":white_check_mark:" if failures == 0 and errors == 0 else ":x:"
-          py = os.environ["PY_VERSION"]
-          summary = os.environ["GITHUB_STEP_SUMMARY"]
-
-          with open(summary, "a") as f:
-              f.write(f"## {icon} Test Results (Python {py})\n\n")
-              f.write("| Metric | Value |\n|--------|-------|\n")
-              f.write(f"| Total | {tests} |\n")
-              f.write(f"| Passed | {passed} |\n")
-              f.write(f"| Failed | {failures} |\n")
-              f.write(f"| Errors | {errors} |\n")
-              f.write(f"| Time | {time_taken:.2f}s |\n\n")
-
-              for case in root.iter("testcase"):
-                  fail = case.find("failure")
-                  if fail is not None:
-                      name = case.attrib.get("name", "")
-                      cls = case.attrib.get("classname", "")
-                      msg = (fail.text or "")[:500]
-                      f.write(f"### :x: {cls}::{name}\n```\n{msg}\n```\n")
-          PYEOF
+        run: docker run --rm -v $PWD:/app -w /app fermax-blue-dev pytest tests/ -v --cov=custom_components/fermax_blue --cov-report=term-missing --tb=short
 
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install ruff
-        run: pip install ruff
+      - name: Build dev image
+        run: docker build -t fermax-blue-dev -f Dockerfile.dev .
 
       - name: Lint
-        run: ruff check custom_components/ tests/ --output-format=github
+        run: docker run --rm -v $PWD:/app -w /app fermax-blue-dev ruff check custom_components/ tests/ scripts/
 
       - name: Format check
-        run: ruff format --check custom_components/ tests/
+        run: docker run --rm -v $PWD:/app -w /app fermax-blue-dev ruff format --check custom_components/ tests/ scripts/
 
   type-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          pip install mypy httpx firebase-messaging
-          pip install homeassistant
+      - name: Build dev image
+        run: docker build -t fermax-blue-dev -f Dockerfile.dev .
 
       - name: Type check
-        run: mypy custom_components/fermax_blue/ --ignore-missing-imports
+        run: docker run --rm -v $PWD:/app -w /app fermax-blue-dev mypy custom_components/fermax_blue/ --ignore-missing-imports
 
   validate:
     runs-on: ubuntu-latest
