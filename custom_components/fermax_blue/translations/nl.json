@@ -41,7 +41,8 @@
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "Bel"
+              "ring": "Bel",
+              "door_opened": "Deur geopend"
             }
           }
         }

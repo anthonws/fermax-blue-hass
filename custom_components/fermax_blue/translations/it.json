@@ -41,7 +41,8 @@
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "Suonata"
+              "ring": "Suonata",
+              "door_opened": "Porta aperta"
             }
           }
         }
