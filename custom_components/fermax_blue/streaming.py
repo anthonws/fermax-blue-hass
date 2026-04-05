@@ -228,6 +228,45 @@ class FermaxSignalingClient:
             _LOGGER.exception("Failed to connect transport")
             return False
 
+    async def pickup(
+        self,
+        kind: str,
+        rtp_parameters: str,
+        app_data: str,
+        rtp_capabilities: str,
+    ) -> bool:
+        """Signal pickup to keep the call alive."""
+        if not self._sio or not self._connected:
+            return False
+
+        try:
+            caps = (
+                json.loads(rtp_capabilities)
+                if isinstance(rtp_capabilities, str)
+                else rtp_capabilities
+            )
+            rtp = (
+                json.loads(rtp_parameters)
+                if isinstance(rtp_parameters, str)
+                else rtp_parameters
+            )
+            app = json.loads(app_data) if isinstance(app_data, str) else app_data
+            response = await self._sio.call(
+                "pickup",
+                {
+                    "kind": kind,
+                    "rtpParameters": rtp,
+                    "appData": app,
+                    "rtpCapabilities": caps,
+                },
+                timeout=10,
+            )
+            _LOGGER.info("Pickup sent: %s", "OK" if response else "no response")
+            return isinstance(response, dict) and "error" not in response
+        except Exception:
+            _LOGGER.debug("Pickup failed", exc_info=True)
+            return False
+
     async def hangup(self) -> None:
         if self._sio and self._connected:
             try:
@@ -364,7 +403,16 @@ class FermaxStreamSession:
             else consume_result.rtp_parameters,
         )
 
-        # 5. Start frame grabber
+        # 5. Signal pickup to keep the call alive
+        device_caps_json = json.dumps(device_caps.dict(exclude_none=True))
+        await self._signaling.pickup(
+            kind="video",
+            rtp_parameters="{}",
+            app_data="{}",
+            rtp_capabilities=device_caps_json,
+        )
+
+        # 6. Start frame grabber
         self._active = True
         self._frame_task = asyncio.create_task(self._grab_frames())
         _LOGGER.info("Stream session started for room %s", self._room_id)
