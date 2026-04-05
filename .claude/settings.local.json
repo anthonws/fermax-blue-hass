@@ -36,7 +36,8 @@
       "mcp__plugin_playwright_playwright__browser_click",
       "mcp__plugin_playwright_playwright__browser_take_screenshot",
       "mcp__plugin_playwright_playwright__browser_run_code",
-      "Bash(gh release:*)"
+      "Bash(gh release:*)",
+      "mcp__plugin_playwright_playwright__browser_tabs"
     ]
   }
 }

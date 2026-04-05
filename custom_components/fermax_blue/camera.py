@@ -105,7 +105,6 @@ class FermaxCamera(FermaxBlueEntity, Camera):
         )
         await response.prepare(request)
 
-        last_written_id = 0
         try:
             while True:
                 stream = self.coordinator.stream_session
@@ -117,7 +116,7 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 elif self.coordinator.last_photo:
                     frame = self.coordinator.last_photo
 
-                if frame and id(frame) != last_written_id:
+                if frame:
                     await response.write(
                         b"--frameboundary\r\n"
                         b"Content-Type: image/jpeg\r\n"
@@ -127,13 +126,12 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                         + frame
                         + b"\r\n"
                     )
-                    last_written_id = id(frame)
 
                 # Fast poll during stream, slow poll for static preview
                 if stream and stream.is_active:
                     await asyncio.sleep(0.04)  # ~25fps
                 else:
-                    await asyncio.sleep(1)  # 1fps for static preview
+                    await asyncio.sleep(2)  # Refresh preview every 2s
         except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
             pass
 
