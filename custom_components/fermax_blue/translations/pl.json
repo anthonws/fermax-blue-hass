@@ -41,7 +41,8 @@
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "Dzwonienie"
+              "ring": "Dzwonienie",
+              "door_opened": "Drzwi otwarte"
             }
           }
         }

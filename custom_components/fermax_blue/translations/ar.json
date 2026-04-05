@@ -41,7 +41,8 @@
         "state_attributes": {
           "event_type": {
             "state": {
-              "ring": "رنين"
+              "ring": "رنين",
+              "door_opened": "تم فتح الباب"
             }
           }
         }

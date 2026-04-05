@@ -23,7 +23,7 @@ from .api import (
     OpeningRecord,
     Pairing,
 )
-from .const import DOMAIN, SIGNAL_CALL_ENDED, SIGNAL_DOORBELL_RING
+from .const import DOMAIN, SIGNAL_CALL_ENDED, SIGNAL_DOOR_OPENED, SIGNAL_DOORBELL_RING
 from .notification import FermaxNotificationListener
 from .streaming import DEFAULT_SIGNALING_URL, FermaxStreamSession
 
@@ -292,6 +292,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
     async def open_door(self, door_name: str = "GENERAL") -> bool:
         """Open a specific door. Uses in-call endpoint if stream is active."""
+        success = False
+
         # If there's an active stream, use the in-call endpoint
         if self._stream_session and self._stream_session.is_active:
             fcm_token = (
@@ -299,24 +301,32 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 if self.notification_listener
                 else None
             )
-            return await self.api.open_door_incall(
+            success = await self.api.open_door_incall(
                 device_id=self.pairing.device_id,
                 room_id=self._stream_session._room_id,
                 fcm_token=fcm_token,
                 call_as=self.pairing.device_id,
             )
+        else:
+            door = self.pairing.access_doors.get(door_name)
+            if not door:
+                for d in self.pairing.access_doors.values():
+                    door = d
+                    break
 
-        door = self.pairing.access_doors.get(door_name)
-        if not door:
-            for d in self.pairing.access_doors.values():
-                door = d
-                break
+            if not door:
+                _LOGGER.error("No accessible door found for %s", door_name)
+                return False
 
-        if not door:
-            _LOGGER.error("No accessible door found for %s", door_name)
-            return False
+            success = await self.api.open_door(self.pairing.device_id, door.access_id)
 
-        return await self.api.open_door(self.pairing.device_id, door.access_id)
+        if success:
+            dispatcher_send(
+                self.hass,
+                SIGNAL_DOOR_OPENED.format(self.pairing.device_id),
+            )
+
+        return success
 
     async def start_camera_preview(self) -> DivertResponse | None:
         """Start camera preview (auto-on) to view the intercom camera."""
