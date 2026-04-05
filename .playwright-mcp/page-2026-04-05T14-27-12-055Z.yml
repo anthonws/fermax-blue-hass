@@ -1,0 +1,4 @@
+- generic [ref=e2]:
+  - img [ref=e3]
+  - generic:
+    - img "Home Assistant is a project by the Open Home Foundation"
