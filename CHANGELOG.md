@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0] - 2026-04-05
+
+### Added
+- **Call history sensor** — `sensor.last_call` shows timestamp of last doorbell ring/call with attributes: call_id, answered, photo_id, recent_calls count
+- **Dashboard card template** — Ready-to-use Lovelace card in `blueprints/fermax_dashboard_card.yaml`
+- **Doorbell notification blueprint** — Automation blueprint with optional camera snapshot in `blueprints/fermax_doorbell_notification.yaml`
+- Call log fetched on every coordinator poll (reuses existing API endpoint)
+
+### Changed
+- 82 unit tests (up from 79)
+- README rewritten: dashboard card section, blueprint docs, updated entity table, fixed How It Works section
+
 ## [0.4.3] - 2026-04-05
 
 ### Fixed
