@@ -7,6 +7,7 @@
 - **Dashboard card template** — Ready-to-use Lovelace card in `blueprints/fermax_dashboard_card.yaml`
 - **Doorbell notification blueprint** — Automation blueprint with optional camera snapshot in `blueprints/fermax_doorbell_notification.yaml`
 - Call log fetched on every coordinator poll (reuses existing API endpoint)
+- **10 language translations** — English, Spanish, French, Italian, Portuguese, German, Polish, Turkish, Dutch, Arabic (covering all Fermax markets)
 
 ### Changed
 - 82 unit tests (up from 79)
