@@ -256,7 +256,7 @@ Features available in the Fermax Blue mobile app that are not yet implemented:
 
 | Feature | Complexity | Description |
 |---------|-----------|-------------|
-| **Two-way audio** | High | Send audio to the intercom during a call. Requires a real audio source (microphone connected to HA) and mediasoup sendTransport with audio producer |
+| ~~**Two-way audio**~~ | ~~High~~ | ✅ Implemented in v0.8.0 — Send audio via `fermax_blue.send_audio` service (file or TTS text) |
 | **Switch camera during call** | Low | Switch between cameras on multi-camera intercoms (`/device/incall/changevideosource`) |
 | **F1 during active call** | Low | Trigger the F1 auxiliary function while a stream is active (`/device/incall/f1`) |
 | **Guest management** | Medium | Add, remove, and authorize guest users for the intercom via the API |
