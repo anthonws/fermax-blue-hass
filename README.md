@@ -1,5 +1,11 @@
 # Fermax Blue for Home Assistant
 
+> ⚠️ **This is a personal fork — not intended for general use.**
+>
+> This repository is a fork of [bvis/fermax-blue-hass](https://github.com/bvis/fermax-blue-hass), maintained here solely for personal experimentation and adaptation to specific use cases. It is **not recommended** for general use: it may lag behind upstream, contain experimental changes, or break without notice.
+>
+> **All credit goes to [@bvis](https://github.com/bvis) and the previous developers** who built and maintain the original integration. If you want a stable, supported version of this integration, please use the **[upstream repository](https://github.com/bvis/fermax-blue-hass)** instead.
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
 Home Assistant custom integration for **Fermax Blue** video door entry systems (DUOX PLUS / blueStream).
