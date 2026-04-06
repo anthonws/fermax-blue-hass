@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.12.1] - 2026-04-06
+
+### Fixed
+- Camera preview (Autoon) was blocked when auto-response was disabled — now always starts the stream for camera preview regardless of auto-response setting
+
 ## [0.12.0] - 2026-04-06
 
 ### Changed
