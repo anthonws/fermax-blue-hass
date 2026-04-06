@@ -158,17 +158,53 @@ def _extract_oauth_from_source(dir_path: str) -> str:
     # Parse the production clientId and clientSecret byte arrays
     # Production is typically the last case (i == 4 || i == 5)
     def _parse_byte_arrays(method_name: str) -> list[bytes]:
-        """Extract all byte array literals from a method."""
+        """Extract all byte array literals from a method.
+
+        Previously used 'throw new NoWhenBranch' as the end anchor, which
+        caused the production (PRO) arrays to be silently dropped: in JADX
+        output the PRO case appears *after* the throw statement, not before.
+
+        Fix: use the next method declaration (or end-of-file) as the boundary
+        so all environments — including PRO — are captured.
+
+        Also resolves local Byte variables (e.g. ``Byte bValueOf = Byte.valueOf(Ascii.NAK)``)
+        by scanning the method body instead of relying on hardcoded heuristics.
+        """
+        # Match from method signature to the next method declaration or EOF.
+        # The PRO environment's return statement follows the NoWhenBranch throw,
+        # so the old anchor missed it entirely.
         m = re.search(
-            rf"public final Byte\[] {method_name}\(\).*?throw new NoWhenBranch",
+            rf"public final Byte\[] {method_name}\(\)(.*?)(?=\n    public |\Z)",
             content,
             re.DOTALL,
         )
         if not m:
             return []
+        method_body = m.group(1)
+
+        # Build a local-variable lookup from the method body.
+        # Handles: Byte bValueOf = Byte.valueOf(Ascii.NAK);
+        local_vars: dict[str, int] = {}
+        for lv in re.finditer(
+            r"Byte\s+(\w+)\s*=\s*Byte\.valueOf\((?:Ascii\.(\w+)|(-?\d+))\)",
+            method_body,
+        ):
+            var_name, ascii_name, raw_int = lv.group(1), lv.group(2), lv.group(3)
+            if ascii_name and ascii_name in _ASCII_MAP:
+                local_vars[var_name] = _ASCII_MAP[ascii_name]
+            elif raw_int:
+                local_vars[var_name] = int(raw_int) & 0xFF
+
         arrays: list[bytes] = []
-        for arr_match in re.finditer(r"new Byte\[]\{([^}]+)\}", m.group(0)):
-            arrays.append(_parse_java_byte_list(arr_match.group(1)))
+        for arr_match in re.finditer(r"new Byte\[]\{([^}]+)\}", method_body):
+            resolved: list[int] = []
+            for token in arr_match.group(1).split(","):
+                token = token.strip()
+                if token in local_vars:
+                    resolved.append(local_vars[token])
+                else:
+                    resolved.append(_parse_java_byte_token(token))
+            arrays.append(bytes(resolved))
         return arrays
 
     client_id_arrays = _parse_byte_arrays("clientId")
