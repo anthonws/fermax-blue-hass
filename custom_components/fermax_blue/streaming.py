@@ -394,6 +394,7 @@ class FermaxStreamSession:
         room_id: str,
         on_end: Callable[[], None] | None = None,
         recordings_dir: str | None = None,
+        record: bool = True,
     ) -> None:
         self._signaling = FermaxSignalingClient(
             signaling_url=signaling_url,
@@ -403,6 +404,7 @@ class FermaxStreamSession:
         self._room_id = room_id
         self._on_end = on_end
         self._recordings_dir = recordings_dir
+        self._record = record
         self._device: Any = None
         self._recv_transport: Any = None
         self._recv_audio_transport: Any = None
@@ -603,8 +605,9 @@ class FermaxStreamSession:
         )
         _LOGGER.info("Audio producer started, pickup completed")
 
-        # 8. Initialize recording (frames collected in _grab_frames)
-        self._init_recording()
+        # 8. Initialize recording (frames collected in _grab_frames) — only for real calls
+        if self._record:
+            self._init_recording()
 
         # 9. Start frame grabber + audio recorder
         self._active = True

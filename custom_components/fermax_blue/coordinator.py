@@ -180,7 +180,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                                 self._last_photo = photo
                                 self._last_photo_id = latest.photo_id
             except Exception:
-                _LOGGER.debug("Failed to fetch call log/photo", exc_info=True)
+                _LOGGER.warning("Failed to fetch call log/photo", exc_info=True)
 
         # Fetch latest door opening (1 API call, lightweight)
         try:
@@ -188,7 +188,17 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             if openings:
                 self._last_opening = openings[0]
         except Exception:
-            _LOGGER.debug("Failed to fetch opening history", exc_info=True)
+            _LOGGER.warning("Failed to fetch opening history", exc_info=True)
+
+        # Fetch DnD status to keep switch state in sync with the server
+        if self.notification_listener and self.notification_listener.fcm_token:
+            try:
+                self._dnd_enabled = await self.api.get_dnd_status(
+                    self.pairing.device_id,
+                    self.notification_listener.fcm_token,
+                )
+            except Exception:
+                _LOGGER.debug("Failed to fetch DnD status", exc_info=True)
 
         return {
             "device_id": device_info.device_id,
@@ -262,8 +272,10 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         if room_id and notification_type in ("Call", "Autoon"):
             socket_url = data.get("SocketUrl", DEFAULT_SIGNALING_URL)
             fermax_token = data.get("FermaxToken", "")
+            # Only record for real doorbell calls, not manual camera previews
+            record = notification_type == "Call"
             self.hass.async_create_task(
-                self._start_stream(room_id, socket_url, fermax_token)
+                self._start_stream(room_id, socket_url, fermax_token, record=record)
             )
 
         # Auto-respond with audio if configured and it's a real call
@@ -428,7 +440,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             )
 
     async def _start_stream(
-        self, room_id: str, signaling_url: str, fermax_token: str = ""
+        self, room_id: str, signaling_url: str, fermax_token: str = "", record: bool = True
     ) -> None:
         """Start a video stream session for the given room."""
         await self.stop_stream()
@@ -460,6 +472,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             room_id=room_id,
             on_end=_on_stream_end,
             recordings_dir=recordings_dir,
+            record=record,
         )
 
         success = await self._stream_session.start()

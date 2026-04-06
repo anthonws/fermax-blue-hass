@@ -335,13 +335,9 @@ class FermaxBlueApi:
     async def get_call_log(self, fcm_token: str) -> list[CallLogEntry]:
         """Get call log entries."""
         try:
-            # FCM token moved to header to avoid exposure in server access logs.
-            # If the Fermax API rejects requests without appToken in the query string,
-            # restore params={"appToken": fcm_token, "callRegistryType": "all"}.
             response = await self._api_get(
                 "/callmanager/api/v1/callregistry/participant",
-                params={"callRegistryType": "all"},
-                extra_headers={"X-App-Token": fcm_token},
+                params={"appToken": fcm_token, "callRegistryType": "all"},
             )
         except httpx.HTTPStatusError:
             return []
@@ -471,13 +467,9 @@ class FermaxBlueApi:
 
     async def get_dnd_status(self, device_id: str, fcm_token: str) -> bool:
         """Get Do Not Disturb status for a device."""
-        # FCM token moved to header to avoid exposure in server access logs.
-        # If the Fermax API rejects requests without token in the query string,
-        # restore params={"deviceId": device_id, "token": fcm_token}.
         response = await self._api_get(
             "/notification/api/v1/mutedevice/me",
-            params={"deviceId": device_id},
-            extra_headers={"X-App-Token": fcm_token},
+            params={"deviceId": device_id, "token": fcm_token},
         )
         data = response.json()
         # API returns bare bool or dict with "muted" key
