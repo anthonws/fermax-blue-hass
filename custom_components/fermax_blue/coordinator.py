@@ -25,6 +25,7 @@ from .api import (
 )
 from .const import (
     DOMAIN,
+    RECORDINGS_DIR,
     SIGNAL_CALL_ENDED,
     SIGNAL_CAMERA_ON,
     SIGNAL_DOOR_OPENED,
@@ -449,12 +450,16 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             self._camera_active = False
             self.async_set_updated_data(self.data)
 
+        media_root = self.hass.config.media_dirs.get("local", "/media")
+        recordings_dir = str(Path(media_root) / RECORDINGS_DIR)
+
         self._stream_session = FermaxStreamSession(
             signaling_url=signaling_url,
             oauth_token=oauth_token,
             fcm_token=fcm_token,
             room_id=room_id,
             on_end=_on_stream_end,
+            recordings_dir=recordings_dir,
         )
 
         success = await self._stream_session.start()

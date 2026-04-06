@@ -191,12 +191,20 @@ class FermaxBlueApi:
         await self._ensure_authenticated()
         return self._access_token or ""
 
-    async def _api_request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def _api_request(
+        self,
+        method: str,
+        path: str,
+        extra_headers: dict | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """Make an authenticated request with retry on transient errors."""
         await self._ensure_authenticated()
         client = await self._get_client()
         url = f"{FERMAX_BASE_URL}{path}"
         headers = self._get_auth_headers()
+        if extra_headers:
+            headers = {**headers, **extra_headers}
         last_exc: Exception | None = None
 
         for attempt in range(MAX_RETRIES + 1):
@@ -229,9 +237,14 @@ class FermaxBlueApi:
         # Should not reach here, but satisfy type checker
         raise last_exc  # type: ignore[misc]
 
-    async def _api_get(self, path: str, **kwargs) -> httpx.Response:
+    async def _api_get(
+        self,
+        path: str,
+        extra_headers: dict | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """Make an authenticated GET request with retry."""
-        return await self._api_request("get", path, **kwargs)
+        return await self._api_request("get", path, extra_headers=extra_headers, **kwargs)
 
     async def _api_post(self, path: str, **kwargs) -> httpx.Response:
         """Make an authenticated POST request with retry."""
@@ -322,9 +335,13 @@ class FermaxBlueApi:
     async def get_call_log(self, fcm_token: str) -> list[CallLogEntry]:
         """Get call log entries."""
         try:
+            # FCM token moved to header to avoid exposure in server access logs.
+            # If the Fermax API rejects requests without appToken in the query string,
+            # restore params={"appToken": fcm_token, "callRegistryType": "all"}.
             response = await self._api_get(
                 "/callmanager/api/v1/callregistry/participant",
-                params={"appToken": fcm_token, "callRegistryType": "all"},
+                params={"callRegistryType": "all"},
+                extra_headers={"X-App-Token": fcm_token},
             )
         except httpx.HTTPStatusError:
             return []
@@ -454,9 +471,13 @@ class FermaxBlueApi:
 
     async def get_dnd_status(self, device_id: str, fcm_token: str) -> bool:
         """Get Do Not Disturb status for a device."""
+        # FCM token moved to header to avoid exposure in server access logs.
+        # If the Fermax API rejects requests without token in the query string,
+        # restore params={"deviceId": device_id, "token": fcm_token}.
         response = await self._api_get(
             "/notification/api/v1/mutedevice/me",
-            params={"deviceId": device_id, "token": fcm_token},
+            params={"deviceId": device_id},
+            extra_headers={"X-App-Token": fcm_token},
         )
         data = response.json()
         # API returns bare bool or dict with "muted" key

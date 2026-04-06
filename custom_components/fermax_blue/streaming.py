@@ -393,6 +393,7 @@ class FermaxStreamSession:
         fcm_token: str,
         room_id: str,
         on_end: Callable[[], None] | None = None,
+        recordings_dir: str | None = None,
     ) -> None:
         self._signaling = FermaxSignalingClient(
             signaling_url=signaling_url,
@@ -401,6 +402,7 @@ class FermaxStreamSession:
         )
         self._room_id = room_id
         self._on_end = on_end
+        self._recordings_dir = recordings_dir
         self._device: Any = None
         self._recv_transport: Any = None
         self._recv_audio_transport: Any = None
@@ -621,7 +623,7 @@ class FermaxStreamSession:
         try:
             from datetime import datetime
 
-            recordings_dir = "/media/fermax_recordings"
+            recordings_dir = self._recordings_dir or "/media/fermax_recordings"
             os.makedirs(recordings_dir, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

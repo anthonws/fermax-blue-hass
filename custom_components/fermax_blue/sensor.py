@@ -95,9 +95,7 @@ class FermaxLastOpeningSensor(FermaxBlueEntity, SensorEntity):
             return None
         record = self.coordinator.last_opening
         return {
-            "user": record.user,
             "door": record.door,
-            "guest_email": record.guest_email,
         }
 
 
