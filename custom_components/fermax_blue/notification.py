@@ -31,8 +31,16 @@ _SENSITIVE_LOG_KEYS = frozenset(
 
 
 def _redact_notification(data: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of *data* with sensitive values replaced by '***'."""
-    return {k: "***" if k in _SENSITIVE_LOG_KEYS else v for k, v in data.items()}
+    """Return a deep copy of *data* with sensitive values replaced by '***' at all nesting levels."""
+    result = {}
+    for k, v in data.items():
+        if k in _SENSITIVE_LOG_KEYS:
+            result[k] = "***"
+        elif isinstance(v, dict):
+            result[k] = _redact_notification(v)
+        else:
+            result[k] = v
+    return result
 
 
 class FermaxNotificationListener:
