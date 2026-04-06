@@ -38,7 +38,12 @@
       "mcp__plugin_playwright_playwright__browser_run_code",
       "Bash(gh release:*)",
       "mcp__plugin_playwright_playwright__browser_tabs",
-      "Bash(__NEW_LINE_f53f190bfb5d4634__ python3:*)"
+      "Bash(__NEW_LINE_f53f190bfb5d4634__ python3:*)",
+      "Bash(python3 -c \"import pymediasoup; print\\(pymediasoup.__file__\\)\")",
+      "Bash(pip3 show:*)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:mediasoup.org)",
+      "WebFetch(domain:community.home-assistant.io)"
     ]
   }
 }
