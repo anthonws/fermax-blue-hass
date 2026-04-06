@@ -37,7 +37,8 @@
       "mcp__plugin_playwright_playwright__browser_take_screenshot",
       "mcp__plugin_playwright_playwright__browser_run_code",
       "Bash(gh release:*)",
-      "mcp__plugin_playwright_playwright__browser_tabs"
+      "mcp__plugin_playwright_playwright__browser_tabs",
+      "Bash(__NEW_LINE_f53f190bfb5d4634__ python3:*)"
     ]
   }
 }
