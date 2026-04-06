@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.helpers.httpx_client import create_async_httpx_client
 
 from .api import FermaxBlueApi
@@ -53,6 +55,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Register send_audio service
+    async def _handle_send_audio(call: ServiceCall) -> None:
+        """Handle the send_audio service call."""
+        audio_file = call.data.get("audio_file")
+        message = call.data.get("message")
+        language = call.data.get("language", "es")
+
+        if not audio_file and not message:
+            _LOGGER.error("send_audio: either audio_file or message is required")
+            return
+
+        # Find the coordinator with an active stream
+        active_coordinator = None
+        for coord in coordinators:
+            if coord.stream_session and coord.stream_session.is_active:
+                active_coordinator = coord
+                break
+
+        if not active_coordinator or not active_coordinator.stream_session:
+            _LOGGER.error("send_audio: no active video stream")
+            return
+
+        # If message provided, generate TTS audio file
+        if message and not audio_file:
+            audio_file = await _generate_tts_audio(hass, message, language)
+            if not audio_file:
+                _LOGGER.error("send_audio: failed to generate TTS audio")
+                return
+
+        if audio_file:
+            await active_coordinator.stream_session.send_audio(audio_file)
+
+    if not hass.services.has_service(DOMAIN, "send_audio"):
+        hass.services.async_register(
+            DOMAIN,
+            "send_audio",
+            _handle_send_audio,
+            schema=vol.Schema(
+                {
+                    vol.Optional("entity_id"): str,
+                    vol.Optional("audio_file"): str,
+                    vol.Optional("message"): str,
+                    vol.Optional("language", default="es"): str,
+                }
+            ),
+        )
+
     async def _async_shutdown(event: Event) -> None:
         """Clean up on shutdown."""
         for coordinator in coordinators:
@@ -71,6 +120,54 @@ async def _async_options_updated(
 ) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _generate_tts_audio(
+    hass: HomeAssistant, message: str, language: str
+) -> str | None:
+    """Generate a WAV file from text using Google Translate TTS."""
+    try:
+        from gtts import gTTS
+
+        tts = gTTS(text=message, lang=language)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            tts.save(f.name)
+            _LOGGER.info("TTS audio generated: %s", f.name)
+            return f.name
+    except ImportError:
+        _LOGGER.debug("gtts not available, trying HA tts service")
+    except Exception:
+        _LOGGER.exception("Failed to generate TTS audio")
+
+    # Fallback: try using HA's built-in TTS
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tts_file:
+            tts_file.close()
+
+        await hass.services.async_call(
+            "tts",
+            "google_translate_say",
+            {
+                "message": message,
+                "language": language,
+                "entity_id": "media_player.none",  # Dummy, we just want the file
+            },
+            blocking=True,
+        )
+        # HA TTS generates files in /config/tts/
+        import glob
+
+        tts_files = sorted(
+            glob.glob("/config/tts/*.mp3"),
+            key=lambda f: Path(f).stat().st_mtime,
+            reverse=True,
+        )
+        if tts_files:
+            return tts_files[0]
+    except Exception:
+        _LOGGER.debug("HA TTS fallback failed", exc_info=True)
+
+    return None
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -> bool:

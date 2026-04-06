@@ -311,10 +311,13 @@ class FermaxStreamSession:
         self._on_end = on_end
         self._device: Any = None
         self._recv_transport: Any = None
+        self._send_transport: Any = None
+        self._audio_producer: Any = None
         self._consumer: Any = None
         self._frame_task: asyncio.Task | None = None
         self._latest_frame: bytes | None = None
         self._active = False
+        self._room: Any = None
 
     @property
     def is_active(self) -> bool:
@@ -403,14 +406,46 @@ class FermaxStreamSession:
             else consume_result.rtp_parameters,
         )
 
-        # 5. Signal pickup to extend stream duration
-        device_caps_json = json.dumps(device_caps.dict(exclude_none=True))
-        await self._signaling.pickup(
-            kind="video",
-            rtp_parameters="{}",
-            app_data="{}",
-            rtp_capabilities=device_caps_json,
+        # 5. Create SendTransport for audio
+        self._room = room
+        send_tp = room.send_transport
+        send_ice = json.loads(send_tp.ice_parameters)
+        send_candidates = json.loads(send_tp.ice_candidates)
+        send_dtls = json.loads(send_tp.dtls_parameters)
+
+        self._send_transport = self._device.createSendTransport(
+            id=send_tp.id,
+            iceParameters=IceParameters(**send_ice),
+            iceCandidates=[IceCandidate(**c) for c in send_candidates],
+            dtlsParameters=DtlsParameters(**send_dtls),
+            sctpParameters=None,
         )
+
+        @self._send_transport.on("connect")
+        async def on_send_connect(dtls_parameters: DtlsParameters) -> None:
+            await self._signaling.connect_transport(
+                transport_id=send_tp.id,
+                dtls_parameters=json.dumps(dtls_parameters.dict(exclude_none=True)),
+            )
+
+        @self._send_transport.on("produce")
+        async def on_produce(
+            kind: str,
+            rtp_parameters: Any,
+            app_data: Any,
+        ) -> str:
+            # Server-side producer creation via signaling
+            result = await self._signaling.pickup(
+                kind=kind,
+                rtp_parameters=json.dumps(rtp_parameters.dict(exclude_none=True))
+                if hasattr(rtp_parameters, "dict")
+                else json.dumps(rtp_parameters),
+                app_data=json.dumps(app_data) if app_data else "{}",
+                rtp_capabilities=json.dumps(device_caps.dict(exclude_none=True)),
+            )
+            _LOGGER.info("Pickup/produce for %s: %s", kind, result)
+            # Return producer ID from pickup response (or empty)
+            return room.audio_producer_id or ""
 
         # 6. Start frame grabber
         self._active = True
@@ -487,10 +522,20 @@ class FermaxStreamSession:
                 await self._consumer.close()
             self._consumer = None
 
+        if self._audio_producer:
+            with contextlib.suppress(Exception):
+                await self._audio_producer.close()
+            self._audio_producer = None
+
         if self._recv_transport:
             with contextlib.suppress(Exception):
                 await self._recv_transport.close()
             self._recv_transport = None
+
+        if self._send_transport:
+            with contextlib.suppress(Exception):
+                await self._send_transport.close()
+            self._send_transport = None
 
         await self._signaling.disconnect()
 
@@ -499,3 +544,34 @@ class FermaxStreamSession:
 
         # Keep _latest_frame for preview after stream ends
         _LOGGER.info("Stream session stopped")
+
+    async def send_audio(self, audio_path: str) -> bool:
+        """Send an audio file to the intercom via mediasoup.
+
+        The audio file (WAV, MP3, OGG) is played through the sendTransport
+        as an audio producer. The intercom speaker will play it.
+        """
+        if not self._active or not self._send_transport:
+            _LOGGER.error("Cannot send audio: no active stream session")
+            return False
+
+        try:
+            from aiortc.contrib.media import MediaPlayer
+
+            player = MediaPlayer(audio_path)
+            if not player.audio:
+                _LOGGER.error("No audio track in file: %s", audio_path)
+                return False
+
+            self._audio_producer = await self._send_transport.produce(
+                track=player.audio,
+                stopTracks=False,
+                appData={},
+            )
+
+            _LOGGER.info("Audio producer started from %s", audio_path)
+            return True
+
+        except Exception:
+            _LOGGER.exception("Failed to send audio from %s", audio_path)
+            return False

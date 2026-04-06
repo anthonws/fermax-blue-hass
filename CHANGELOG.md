@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.0] - 2026-04-06
+
+### Added
+- **Two-way audio** — Send audio to the intercom speaker during an active video stream
+  - Service `fermax_blue.send_audio` accepts an audio file (WAV/MP3/OGG) or a text message
+  - Text messages are converted to speech via Google TTS (`gTTS`)
+  - Useful for automations: "when doorbell rings, say 'I'll be right down'"
+- SendTransport and audio producer via mediasoup for real-time audio delivery
+- New dependency: `gTTS>=2.5.0` for text-to-speech
+
 ## [0.7.0] - 2026-04-06
 
 ### Added
