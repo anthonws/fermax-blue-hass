@@ -57,7 +57,19 @@ def _patch_pymediasoup_audio_channels() -> None:
 
 
 _patch_pymediasoup_audio_channels()
-DEFAULT_SIGNALING_URL = "http://signaling-pro-duoxme.fermax.io"
+DEFAULT_SIGNALING_URL = "wss://signaling-pro-duoxme.fermax.io"
+
+_INSECURE_SCHEMES = ("http://", "ws://")
+
+
+def _require_tls_url(url: str) -> None:
+    """Raise ValueError if url uses a plain-text (non-TLS) scheme."""
+    lowered = url.lower()
+    if any(lowered.startswith(scheme) for scheme in _INSECURE_SCHEMES):
+        raise ValueError(
+            f"Signaling URL '{url}' uses an insecure scheme. "
+            "Only 'https://' or 'wss://' are allowed to prevent credential exposure."
+        )
 
 
 def _create_switchable_audio_track() -> Any:
@@ -174,6 +186,7 @@ class FermaxSignalingClient:
                 self._on_end_up(code)
 
         try:
+            _require_tls_url(self._signaling_url)
             await self._sio.connect(self._signaling_url, transports=["websocket"])
 
             response = await self._sio.call(
