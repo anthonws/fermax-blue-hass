@@ -279,19 +279,20 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             self.api.ack_notification(fcm_message_id, is_call=is_call)
         )
 
-        # Start video stream + auto-respond only when auto-response is enabled
+        # Start video stream for Autoon (camera preview) always,
+        # for Call (doorbell) only when auto-response is enabled
         room_id = data.get("RoomId")
-        if (
-            room_id
-            and notification_type in ("Call", "Autoon")
-            and self._auto_response_file
-        ):
+        should_stream = room_id and (
+            notification_type == "Autoon"
+            or (notification_type == "Call" and self._auto_response_file)
+        )
+        if should_stream:
             socket_url = data.get("SocketUrl", DEFAULT_SIGNALING_URL)
             fermax_token = data.get("FermaxToken", self.api._access_token or "")
             self.hass.async_create_task(
                 self._start_stream(room_id, socket_url, fermax_token)
             )
-            if notification_type == "Call":
+            if notification_type == "Call" and self._auto_response_file:
                 self.hass.async_create_task(self._auto_respond())
 
         # Only trigger doorbell ring for actual calls, not auto-on
