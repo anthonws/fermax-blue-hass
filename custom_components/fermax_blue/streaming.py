@@ -515,8 +515,8 @@ class FermaxStreamSession:
             # Return producer ID from pickup response (or empty)
             return room.audio_producer_id or ""
 
-        # 6. Start recording (video + audio to MP4)
-        await self._start_recording()
+        # 6. Initialize recording (frames collected in _grab_frames)
+        self._init_recording()
 
         # 7. Start frame grabber
         self._active = True
@@ -524,41 +524,77 @@ class FermaxStreamSession:
         _LOGGER.info("Stream session started for room %s", self._room_id)
         return True
 
-    async def _start_recording(self) -> None:
-        """Start recording video + audio to MP4.
-
-        Uses MediaRelay to fan out the consumer tracks so both the frame
-        grabber and the recorder can read from them independently.
-        """
+    def _init_recording(self) -> None:
+        """Initialize frame collection for recording."""
         try:
             from datetime import datetime
-
-            from aiortc.contrib.media import MediaRecorder, MediaRelay
 
             recordings_dir = "/config/media/fermax_recordings"
             os.makedirs(recordings_dir, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             self._recording_path = f"{recordings_dir}/{timestamp}.mp4"
-
-            # Relay the video track so both recorder and frame grabber can read
-            self._relay = MediaRelay()
-            video_for_recorder = self._relay.subscribe(self._consumer.track)
-            self._video_for_grabber = self._relay.subscribe(self._consumer.track)
-
-            self._recorder = MediaRecorder(
-                self._recording_path,
-                options={"movflags": "frag_keyframe+empty_moov"},
-            )
-            self._recorder.addTrack(video_for_recorder)
-            if self._audio_consumer:
-                self._recorder.addTrack(self._audio_consumer.track)
-            await self._recorder.start()
+            self._recording_frames: list[bytes] = []
             _LOGGER.info("Recording to %s", self._recording_path)
         except Exception:
             _LOGGER.debug("Recording not started", exc_info=True)
-            self._recorder = None
-            self._video_for_grabber = None  # type: ignore[assignment]
+            self._recording_path = None
+
+    async def _save_recording(self) -> None:
+        """Convert collected JPEG frames to MP4 via ffmpeg."""
+        frames = getattr(self, "_recording_frames", [])
+        if not self._recording_path or not frames:
+            return
+
+        import subprocess
+        import tempfile
+
+        mjpeg_path = tempfile.mktemp(suffix=".mjpeg")
+        try:
+            await asyncio.to_thread(
+                lambda: open(mjpeg_path, "wb").write(b"".join(frames))  # noqa: SIM115
+            )
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "mjpeg",
+                    "-framerate",
+                    "25",
+                    "-i",
+                    mjpeg_path,
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    self._recording_path,
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if proc.returncode == 0:
+                size = await asyncio.to_thread(os.path.getsize, self._recording_path)
+                _LOGGER.info(
+                    "Recording saved: %s (%d KB)",
+                    self._recording_path,
+                    size // 1024,
+                )
+            else:
+                _LOGGER.warning("ffmpeg exited with %d", proc.returncode)
+        except FileNotFoundError:
+            _LOGGER.debug("ffmpeg not available, saving raw MJPEG")
+            dest = self._recording_path.replace(".mp4", ".mjpeg")
+            await asyncio.to_thread(
+                lambda: open(dest, "wb").write(b"".join(frames))  # noqa: SIM115
+            )
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(mjpeg_path)
+            self._recording_frames = []
 
     @staticmethod
     def _overlay_live_indicator(img: Any) -> Any:
@@ -584,8 +620,7 @@ class FermaxStreamSession:
         """Read video frames from the consumer track, encode as JPEG."""
         from aiortc.mediastreams import MediaStreamError
 
-        # Use relayed track if recording is active, otherwise direct consumer track
-        track = getattr(self, "_video_for_grabber", None) or self._consumer.track
+        track = self._consumer.track
         _LOGGER.info("Frame grabber started, track kind=%s", track.kind)
         frame_count = 0
         try:
@@ -593,6 +628,18 @@ class FermaxStreamSession:
                 frame = await track.recv()
                 frame_count += 1
                 img = frame.to_image()
+
+                # Save raw frame for recording (without LIVE overlay)
+                raw_buf = io.BytesIO()
+                img.save(raw_buf, format="JPEG", quality=75)
+                raw_jpeg = raw_buf.getvalue()
+                if (
+                    hasattr(self, "_recording_frames")
+                    and self._recording_frames is not None
+                ):
+                    self._recording_frames.append(raw_jpeg)
+
+                # Add LIVE overlay for display
                 img = self._overlay_live_indicator(img)
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=75)
@@ -623,13 +670,8 @@ class FermaxStreamSession:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._frame_task
 
-        # Stop recording first
-        if self._recorder:
-            with contextlib.suppress(Exception):
-                await self._recorder.stop()
-            self._recorder = None
-            if self._recording_path:
-                _LOGGER.info("Recording saved: %s", self._recording_path)
+        # Save recording from collected frames
+        await self._save_recording()
 
         # Close in order: consumers → transports → signaling
         if self._consumer:
