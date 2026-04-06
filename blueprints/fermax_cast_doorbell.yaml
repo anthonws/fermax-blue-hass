@@ -86,11 +86,11 @@ action:
           - condition: template
             value_template: "{{ speaker_devices | length > 0 }}"
         sequence:
-          - action: tts.speak
-            target:
-              entity_id: !input speaker_devices
+          - action: tts.google_translate_say
             data:
+              entity_id: !input speaker_devices
               message: !input announcement_message
+              language: "es"
 
   # Auto-respond to intercom
   - choose:
