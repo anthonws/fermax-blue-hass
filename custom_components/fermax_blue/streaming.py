@@ -525,7 +525,11 @@ class FermaxStreamSession:
         return True
 
     async def _start_recording(self) -> None:
-        """Start recording video + audio to MP4."""
+        """Start recording video + audio to MP4.
+
+        Uses MediaRelay to fan out the consumer tracks so both the frame
+        grabber and the recorder can read from them independently.
+        """
         try:
             from datetime import datetime
 
@@ -537,21 +541,24 @@ class FermaxStreamSession:
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             self._recording_path = f"{recordings_dir}/{timestamp}.mp4"
 
-            # Use MediaRelay to fan out tracks (recorder + frame grabber)
-            relay = MediaRelay()
+            # Relay the video track so both recorder and frame grabber can read
+            self._relay = MediaRelay()
+            video_for_recorder = self._relay.subscribe(self._consumer.track)
+            self._video_for_grabber = self._relay.subscribe(self._consumer.track)
 
             self._recorder = MediaRecorder(
                 self._recording_path,
                 options={"movflags": "frag_keyframe+empty_moov"},
             )
-            self._recorder.addTrack(relay.subscribe(self._consumer.track))
+            self._recorder.addTrack(video_for_recorder)
             if self._audio_consumer:
-                self._recorder.addTrack(relay.subscribe(self._audio_consumer.track))
+                self._recorder.addTrack(self._audio_consumer.track)
             await self._recorder.start()
             _LOGGER.info("Recording to %s", self._recording_path)
         except Exception:
             _LOGGER.debug("Recording not started", exc_info=True)
             self._recorder = None
+            self._video_for_grabber = None  # type: ignore[assignment]
 
     @staticmethod
     def _overlay_live_indicator(img: Any) -> Any:
@@ -577,7 +584,8 @@ class FermaxStreamSession:
         """Read video frames from the consumer track, encode as JPEG."""
         from aiortc.mediastreams import MediaStreamError
 
-        track = self._consumer.track
+        # Use relayed track if recording is active, otherwise direct consumer track
+        track = getattr(self, "_video_for_grabber", None) or self._consumer.track
         _LOGGER.info("Frame grabber started, track kind=%s", track.kind)
         frame_count = 0
         try:
