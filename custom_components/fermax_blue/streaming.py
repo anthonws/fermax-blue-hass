@@ -529,7 +529,7 @@ class FermaxStreamSession:
         try:
             from datetime import datetime
 
-            recordings_dir = "/config/media/fermax_recordings"
+            recordings_dir = "/media/fermax_recordings"
             os.makedirs(recordings_dir, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

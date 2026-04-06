@@ -121,7 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
         """Delete recordings older than retention period."""
         import time
 
-        recordings_path = Path(hass.config.config_dir) / "media" / RECORDINGS_DIR
+        recordings_path = Path("/media") / RECORDINGS_DIR
         if not recordings_path.exists():
             return
         retention = entry.options.get(
