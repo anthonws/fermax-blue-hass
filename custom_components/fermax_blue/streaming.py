@@ -57,7 +57,19 @@ def _patch_pymediasoup_audio_channels() -> None:
 
 
 _patch_pymediasoup_audio_channels()
-DEFAULT_SIGNALING_URL = "http://signaling-pro-duoxme.fermax.io"
+DEFAULT_SIGNALING_URL = "wss://signaling-pro-duoxme.fermax.io"
+
+_INSECURE_SCHEMES = ("http://", "ws://")
+
+
+def _require_tls_url(url: str) -> None:
+    """Raise ValueError if url uses a plain-text (non-TLS) scheme."""
+    lowered = url.lower()
+    if any(lowered.startswith(scheme) for scheme in _INSECURE_SCHEMES):
+        raise ValueError(
+            f"Signaling URL '{url}' uses an insecure scheme. "
+            "Only 'https://' or 'wss://' are allowed to prevent credential exposure."
+        )
 
 
 def _create_switchable_audio_track() -> Any:
@@ -174,6 +186,7 @@ class FermaxSignalingClient:
                 self._on_end_up(code)
 
         try:
+            _require_tls_url(self._signaling_url)
             await self._sio.connect(self._signaling_url, transports=["websocket"])
 
             response = await self._sio.call(
@@ -380,6 +393,8 @@ class FermaxStreamSession:
         fcm_token: str,
         room_id: str,
         on_end: Callable[[], None] | None = None,
+        recordings_dir: str | None = None,
+        record: bool = True,
     ) -> None:
         self._signaling = FermaxSignalingClient(
             signaling_url=signaling_url,
@@ -388,6 +403,8 @@ class FermaxStreamSession:
         )
         self._room_id = room_id
         self._on_end = on_end
+        self._recordings_dir = recordings_dir
+        self._record = record
         self._device: Any = None
         self._recv_transport: Any = None
         self._recv_audio_transport: Any = None
@@ -588,8 +605,9 @@ class FermaxStreamSession:
         )
         _LOGGER.info("Audio producer started, pickup completed")
 
-        # 8. Initialize recording (frames collected in _grab_frames)
-        self._init_recording()
+        # 8. Initialize recording (frames collected in _grab_frames) — only for real calls
+        if self._record:
+            self._init_recording()
 
         # 9. Start frame grabber + audio recorder
         self._active = True
@@ -608,7 +626,7 @@ class FermaxStreamSession:
         try:
             from datetime import datetime
 
-            recordings_dir = "/media/fermax_recordings"
+            recordings_dir = self._recordings_dir or "/media/fermax_recordings"
             os.makedirs(recordings_dir, exist_ok=True)
 
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

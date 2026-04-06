@@ -141,7 +141,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
         """Delete recordings older than retention period."""
         import time
 
-        recordings_path = Path("/media") / RECORDINGS_DIR
+        media_root = hass.config.media_dirs.get("local", "/media")
+        recordings_path = Path(media_root) / RECORDINGS_DIR
         if not recordings_path.exists():
             return
         retention = entry.options.get(
@@ -216,39 +217,14 @@ async def _generate_tts_audio(
             _LOGGER.info("TTS audio generated: %s", f.name)
             return f.name
     except ImportError:
-        _LOGGER.debug("gtts not available, trying HA tts service")
+        _LOGGER.error(
+            "gtts is a required dependency but could not be imported; "
+            "TTS generation is unavailable"
+        )
+        return None
     except Exception:
         _LOGGER.exception("Failed to generate TTS audio")
-
-    # Fallback: try using HA's built-in TTS
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tts_file:
-            tts_file.close()
-
-        await hass.services.async_call(
-            "tts",
-            "google_translate_say",
-            {
-                "message": message,
-                "language": language,
-                "entity_id": "media_player.none",  # Dummy, we just want the file
-            },
-            blocking=True,
-        )
-        # HA TTS generates files in /config/tts/
-        import glob
-
-        tts_files = sorted(
-            glob.glob("/config/tts/*.mp3"),
-            key=lambda f: Path(f).stat().st_mtime,
-            reverse=True,
-        )
-        if tts_files:
-            return tts_files[0]
-    except Exception:
-        _LOGGER.debug("HA TTS fallback failed", exc_info=True)
-
-    return None
+        return None
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -> bool:

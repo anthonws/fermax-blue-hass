@@ -188,12 +188,25 @@ class FermaxBlueApi:
         if not self.is_authenticated:
             await self.authenticate()
 
-    async def _api_request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def get_access_token(self) -> str:
+        """Return a fresh access token, re-authenticating if needed."""
+        await self._ensure_authenticated()
+        return self._access_token or ""
+
+    async def _api_request(
+        self,
+        method: str,
+        path: str,
+        extra_headers: dict | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """Make an authenticated request with retry on transient errors."""
         await self._ensure_authenticated()
         client = await self._get_client()
         url = f"{self._base_url}{path}"
         headers = self._get_auth_headers()
+        if extra_headers:
+            headers = {**headers, **extra_headers}
         last_exc: Exception | None = None
 
         for attempt in range(MAX_RETRIES + 1):
@@ -226,9 +239,14 @@ class FermaxBlueApi:
         # Should not reach here, but satisfy type checker
         raise last_exc  # type: ignore[misc]
 
-    async def _api_get(self, path: str, **kwargs) -> httpx.Response:
+    async def _api_get(
+        self,
+        path: str,
+        extra_headers: dict | None = None,
+        **kwargs,
+    ) -> httpx.Response:
         """Make an authenticated GET request with retry."""
-        return await self._api_request("get", path, **kwargs)
+        return await self._api_request("get", path, extra_headers=extra_headers, **kwargs)
 
     async def _api_post(self, path: str, **kwargs) -> httpx.Response:
         """Make an authenticated POST request with retry."""
