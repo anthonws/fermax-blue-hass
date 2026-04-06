@@ -518,9 +518,15 @@ class FermaxStreamSession:
         # 6. Initialize recording (frames collected in _grab_frames)
         self._init_recording()
 
-        # 7. Start frame grabber
+        # 7. Start frame grabber + audio recorder
         self._active = True
         self._frame_task = asyncio.create_task(self._grab_frames())
+        if self._audio_consumer:
+            self._audio_task: asyncio.Task | None = asyncio.create_task(
+                self._grab_audio()
+            )
+        else:
+            self._audio_task = None
         _LOGGER.info("Stream session started for room %s", self._room_id)
         return True
 
@@ -535,66 +541,100 @@ class FermaxStreamSession:
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             self._recording_path = f"{recordings_dir}/{timestamp}.mp4"
             self._recording_frames: list[bytes] = []
+            self._recording_audio_frames: list[bytes] = []
+            self._audio_sample_rate = 48000
             _LOGGER.info("Recording to %s", self._recording_path)
         except Exception:
             _LOGGER.debug("Recording not started", exc_info=True)
             self._recording_path = None
 
     async def _save_recording(self) -> None:
-        """Convert collected JPEG frames to MP4 via ffmpeg."""
-        frames = getattr(self, "_recording_frames", [])
-        if not self._recording_path or not frames:
+        """Convert collected video + audio frames to MP4 via ffmpeg."""
+        video_frames = getattr(self, "_recording_frames", [])
+        audio_frames = getattr(self, "_recording_audio_frames", [])
+        if not self._recording_path or not video_frames:
             return
 
         import subprocess
         import tempfile
 
         mjpeg_path = tempfile.mktemp(suffix=".mjpeg")
+        pcm_path = tempfile.mktemp(suffix=".pcm")
+        has_audio = bool(audio_frames)
         try:
             await asyncio.to_thread(
-                lambda: open(mjpeg_path, "wb").write(b"".join(frames))  # noqa: SIM115
+                lambda: open(mjpeg_path, "wb").write(b"".join(video_frames))  # noqa: SIM115
             )
+            if has_audio:
+                await asyncio.to_thread(
+                    lambda: open(pcm_path, "wb").write(b"".join(audio_frames))  # noqa: SIM115
+                )
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "mjpeg",
+                "-framerate",
+                "25",
+                "-i",
+                mjpeg_path,
+            ]
+            if has_audio:
+                sr = str(getattr(self, "_audio_sample_rate", 48000))
+                cmd += [
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    sr,
+                    "-ac",
+                    "1",
+                    "-i",
+                    pcm_path,
+                ]
+            cmd += [
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+            if has_audio:
+                cmd += ["-c:a", "aac", "-b:a", "64k"]
+            cmd += ["-shortest", self._recording_path]
+
             proc = await asyncio.to_thread(
                 subprocess.run,
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-f",
-                    "mjpeg",
-                    "-framerate",
-                    "25",
-                    "-i",
-                    mjpeg_path,
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast",
-                    "-pix_fmt",
-                    "yuv420p",
-                    self._recording_path,
-                ],
+                cmd,
                 capture_output=True,
-                timeout=30,
+                timeout=60,
             )
             if proc.returncode == 0:
                 size = await asyncio.to_thread(os.path.getsize, self._recording_path)
                 _LOGGER.info(
-                    "Recording saved: %s (%d KB)",
+                    "Recording saved: %s (%d KB, audio=%s)",
                     self._recording_path,
                     size // 1024,
+                    has_audio,
                 )
             else:
-                _LOGGER.warning("ffmpeg exited with %d", proc.returncode)
+                _LOGGER.warning(
+                    "ffmpeg exited with %d: %s", proc.returncode, proc.stderr[-200:]
+                )
         except FileNotFoundError:
             _LOGGER.debug("ffmpeg not available, saving raw MJPEG")
             dest = self._recording_path.replace(".mp4", ".mjpeg")
             await asyncio.to_thread(
-                lambda: open(dest, "wb").write(b"".join(frames))  # noqa: SIM115
+                lambda: open(dest, "wb").write(b"".join(video_frames))  # noqa: SIM115
             )
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(mjpeg_path)
+            with contextlib.suppress(OSError):
+                os.unlink(pcm_path)
             self._recording_frames = []
+            self._recording_audio_frames = []
 
     @staticmethod
     def _overlay_live_indicator(img: Any) -> Any:
@@ -615,6 +655,27 @@ class FermaxStreamSession:
             pass  # Never let overlay failure break the stream
 
         return img
+
+    async def _grab_audio(self) -> None:
+        """Capture audio frames from the intercom for recording."""
+        from aiortc.mediastreams import MediaStreamError
+
+        track = self._audio_consumer.track
+        try:
+            while self._active:
+                frame = await track.recv()
+                if (
+                    hasattr(self, "_recording_audio_frames")
+                    and self._recording_audio_frames is not None
+                ):
+                    # Convert audio frame to raw PCM bytes
+                    self._audio_sample_rate = frame.sample_rate
+                    raw = frame.to_ndarray().tobytes()
+                    self._recording_audio_frames.append(raw)
+        except (MediaStreamError, asyncio.CancelledError):
+            pass
+        except Exception:
+            _LOGGER.debug("Audio grabber error", exc_info=True)
 
     async def _grab_frames(self) -> None:
         """Read video frames from the consumer track, encode as JPEG."""
@@ -669,6 +730,12 @@ class FermaxStreamSession:
             self._frame_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._frame_task
+
+        audio_task = getattr(self, "_audio_task", None)
+        if audio_task and not audio_task.done():
+            audio_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await audio_task
 
         # Save recording from collected frames
         await self._save_recording()
