@@ -30,7 +30,7 @@ from .const import (
     SIGNAL_DOOR_OPENED,
     SIGNAL_DOORBELL_RING,
 )
-from .notification import FermaxNotificationListener
+from .notification import FermaxNotificationListener, _redact_notification
 from .streaming import DEFAULT_SIGNALING_URL, FermaxStreamSession
 
 _LOGGER = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                                 self._last_photo = photo
                                 self._last_photo_id = latest.photo_id
             except Exception:
-                _LOGGER.debug("Failed to fetch call log/photo", exc_info=True)
+                _LOGGER.warning("Failed to fetch call log/photo", exc_info=True)
 
         # Fetch latest door opening (1 API call, lightweight)
         try:
@@ -190,7 +190,16 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             if openings:
                 self._last_opening = openings[0]
         except Exception:
-            _LOGGER.debug("Failed to fetch opening history", exc_info=True)
+            _LOGGER.warning("Failed to fetch opening history", exc_info=True)
+
+        # Fetch DnD status to keep switch state in sync with the server
+        if self.notification_listener and self.notification_listener.fcm_token:
+            try:
+                self._dnd_enabled = await self.api.get_dnd_status(
+                    self.pairing.device_id, self.notification_listener.fcm_token,
+                )
+            except Exception:
+                _LOGGER.debug("Failed to fetch DnD status", exc_info=True)
 
         return {
             "device_id": device_info.device_id,
@@ -210,7 +219,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """Set up the FCM notification listener."""
         self._storage_path = storage_path
         self.notification_listener = FermaxNotificationListener(
-            storage_path=storage_path,
+            hass=self.hass,
             notification_callback=self._handle_notification,
             firebase_api_key=str(self._firebase_config.get("firebase_api_key", "")),
             firebase_sender_id=self._firebase_config.get("firebase_sender_id", 0),
@@ -261,7 +270,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         _LOGGER.info(
             "Doorbell notification for %s: %s",
             self.pairing.device_id,
-            notification,
+            _redact_notification(notification),
         )
 
         # Notification data may be nested under "data" key
@@ -463,7 +472,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         fcm_token = self.notification_listener.fcm_token
         if not fcm_token:
             return
-        oauth_token = fermax_token or self.api._access_token or ""
+        oauth_token = fermax_token or await self.api.get_access_token()
 
         @callback
         def _on_stream_end() -> None:
