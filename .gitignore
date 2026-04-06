@@ -22,3 +22,4 @@ scripts/test_*_run.py
 
 # FCM credentials (never commit)
 **/fermax_fcm_credentials.json
+.playwright-mcp/
