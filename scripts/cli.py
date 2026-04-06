@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 # Add project root to path so we can import the integration code
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,7 +52,23 @@ async def main() -> None:
         print("Error: credentials required")
         return
 
-    api = FermaxBlueApi(username, password)
+    # Load API/Firebase credentials
+    creds_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "credentials.json",
+    )
+    if not os.path.exists(creds_path):
+        print(f"Error: {creds_path} not found. Run extract_credentials.py first.")
+        return
+    creds = json.loads(Path(creds_path).read_text())
+
+    api = FermaxBlueApi(
+        username,
+        password,
+        auth_url=creds["fermax_auth_url"],
+        base_url=creds["fermax_base_url"],
+        auth_basic=creds["fermax_auth_basic"],
+    )
 
     try:
         # Authenticate

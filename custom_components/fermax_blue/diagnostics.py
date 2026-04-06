@@ -17,6 +17,8 @@ REDACT_KEYS = {
     "access_token",
     "fcm_token",
     "token",
+    "fermax_auth_basic",
+    "firebase_api_key",
 }
 
 

@@ -3,10 +3,24 @@
     "step": {
       "user": {
         "title": "تسجيل الدخول Fermax Blue",
-        "description": "أدخل بيانات حساب Fermax Blue.",
+        "description": "أدخل بيانات اعتماد تطبيق Fermax Blue الخاص بك.",
         "data": {
           "username": "البريد الإلكتروني",
           "password": "كلمة المرور"
+        }
+      },
+      "credentials": {
+        "title": "بيانات اعتماد API",
+        "description": "أدخل بيانات اعتماد API و Firebase المستخرجة من تطبيق Fermax Blue الخاص بك. راجع وثائق التكامل للحصول على التعليمات.",
+        "data": {
+          "fermax_auth_url": "Fermax Auth URL",
+          "fermax_base_url": "Fermax Base URL",
+          "fermax_auth_basic": "Fermax Auth Basic header",
+          "firebase_api_key": "Firebase API Key",
+          "firebase_sender_id": "Firebase Sender ID",
+          "firebase_app_id": "Firebase App ID",
+          "firebase_project_id": "Firebase Project ID",
+          "firebase_package_name": "Firebase Package Name"
         }
       }
     },

@@ -4,7 +4,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.fermax_blue.api import FermaxAuthError
+from custom_components.fermax_blue.api import FermaxAuthError, FermaxBlueApi
+from custom_components.fermax_blue.const import (
+    CONF_FERMAX_AUTH_BASIC,
+    CONF_FERMAX_AUTH_URL,
+    CONF_FERMAX_BASE_URL,
+    CONF_FIREBASE_API_KEY,
+    CONF_FIREBASE_APP_ID,
+    CONF_FIREBASE_PACKAGE_NAME,
+    CONF_FIREBASE_PROJECT_ID,
+    CONF_FIREBASE_SENDER_ID,
+)
 
 
 class TestConfigFlow:
@@ -136,36 +146,86 @@ class TestDataModels:
         assert len(pairing.access_doors) == 0
 
 
-class TestConstObfuscation:
-    """Test that obfuscated constants decode correctly."""
+class TestCredentials:
+    """Test that API/Firebase credentials are properly handled."""
 
-    def test_firebase_api_key_decodes(self):
-        """Test Firebase API key decodes to expected format."""
-        from custom_components.fermax_blue.const import FIREBASE_API_KEY
+    def test_api_requires_credentials(self):
+        """Test API client requires auth_url, base_url, auth_basic."""
+        api = FermaxBlueApi(
+            "user@test.com",
+            "pass",
+            auth_url="https://auth.example.com/token",
+            base_url="https://api.example.com",
+            auth_basic="Basic dGVzdDp0ZXN0",
+        )
+        assert api._auth_url == "https://auth.example.com/token"
+        assert api._base_url == "https://api.example.com"
+        assert api._auth_basic == "Basic dGVzdDp0ZXN0"
 
-        assert FIREBASE_API_KEY.startswith("AIza")
+    def test_api_missing_credentials_raises(self):
+        """Test API client raises when required credentials are missing."""
+        with pytest.raises(TypeError):
+            FermaxBlueApi("user@test.com", "pass")
 
-    def test_firebase_sender_id_is_int(self):
-        """Test Firebase sender ID is an integer."""
-        from custom_components.fermax_blue.const import FIREBASE_SENDER_ID
+    def test_notification_listener_requires_firebase(self):
+        """Test notification listener requires all Firebase credentials."""
+        from pathlib import Path
 
-        assert isinstance(FIREBASE_SENDER_ID, int)
-
-    def test_firebase_app_id_format(self):
-        """Test Firebase app ID has expected format."""
-        from custom_components.fermax_blue.const import FIREBASE_APP_ID
-
-        assert FIREBASE_APP_ID.startswith("1:")
-        assert ":android:" in FIREBASE_APP_ID
-
-    def test_fermax_urls_decode(self):
-        """Test Fermax API URLs decode correctly."""
-        from custom_components.fermax_blue.const import (
-            FERMAX_AUTH_URL,
-            FERMAX_BASE_URL,
+        from custom_components.fermax_blue.notification import (
+            FermaxNotificationListener,
         )
 
-        assert "fermax.io" in FERMAX_AUTH_URL
-        assert "fermax.io" in FERMAX_BASE_URL
-        assert FERMAX_AUTH_URL.startswith("https://")
-        assert FERMAX_BASE_URL.startswith("https://")
+        listener = FermaxNotificationListener(
+            storage_path=Path("/tmp"),
+            notification_callback=lambda n, p: None,
+            firebase_api_key="AIzaTestKey",
+            firebase_sender_id=123456,
+            firebase_app_id="1:123:android:abc",
+            firebase_project_id="test-project",
+            firebase_package_name="com.test.app",
+        )
+        assert listener._fcm_config.api_key == "AIzaTestKey"
+        assert listener._fcm_config.app_id == "1:123:android:abc"
+        assert listener._fcm_config.project_id == "test-project"
+        assert listener._fcm_config.messaging_sender_id == "123456"
+        assert listener._fcm_config.bundle_id == "com.test.app"
+
+    def test_notification_listener_missing_firebase_raises(self):
+        """Test notification listener raises when Firebase credentials are missing."""
+        from pathlib import Path
+
+        from custom_components.fermax_blue.notification import (
+            FermaxNotificationListener,
+        )
+
+        with pytest.raises(TypeError):
+            FermaxNotificationListener(
+                storage_path=Path("/tmp"),
+                notification_callback=lambda n, p: None,
+            )
+
+    def test_conf_keys_defined(self):
+        """Test all CONF_ keys for credentials are defined."""
+        assert CONF_FERMAX_AUTH_URL == "fermax_auth_url"
+        assert CONF_FERMAX_BASE_URL == "fermax_base_url"
+        assert CONF_FERMAX_AUTH_BASIC == "fermax_auth_basic"
+        assert CONF_FIREBASE_API_KEY == "firebase_api_key"
+        assert CONF_FIREBASE_SENDER_ID == "firebase_sender_id"
+        assert CONF_FIREBASE_APP_ID == "firebase_app_id"
+        assert CONF_FIREBASE_PROJECT_ID == "firebase_project_id"
+        assert CONF_FIREBASE_PACKAGE_NAME == "firebase_package_name"
+
+    def test_no_hardcoded_credentials_in_const(self):
+        """Test that const.py has no hardcoded API/Firebase values."""
+        import inspect
+
+        from custom_components.fermax_blue import const
+
+        source = inspect.getsource(const)
+        # No obfuscation function or base64 imports
+        assert "base64" not in source
+        assert "_d(" not in source
+        # No hardcoded URLs or keys
+        assert "fermax.io" not in source
+        assert "AIza" not in source
+        assert "oauth/token" not in source

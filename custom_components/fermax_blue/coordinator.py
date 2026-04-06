@@ -49,6 +49,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         pairing: Pairing,
         scan_interval: int = 5,
         auto_response_file: str = "",
+        firebase_config: dict[str, str | int] | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -75,6 +76,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._stream_session: FermaxStreamSession | None = None
         self._storage_path: Path | None = None
         self._auto_response_file = auto_response_file
+        self._firebase_config = firebase_config or {}
         self._processed_notifications: set[str] = set()
 
     @property
@@ -210,6 +212,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self.notification_listener = FermaxNotificationListener(
             storage_path=storage_path,
             notification_callback=self._handle_notification,
+            **self._firebase_config,
         )
 
         # Load persisted last photo for camera preview

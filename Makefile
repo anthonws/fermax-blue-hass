@@ -1,7 +1,7 @@
 DEV_IMG = fermax-blue-dev
 DEV_RUN = docker run --rm -v $(PWD):/app -w /app $(DEV_IMG)
 
-.PHONY: lint format format-check typecheck test check cli pre-push dev-image
+.PHONY: lint format format-check typecheck test check cli pre-push dev-image extract-credentials
 
 dev-image:
 	@docker build -q -t $(DEV_IMG) -f Dockerfile.dev . > /dev/null
@@ -26,6 +26,9 @@ check: dev-image
 
 cli: dev-image
 	docker run --rm -it -v $(PWD):/app -w /app -e FERMAX_USER -e FERMAX_PASS $(DEV_IMG) python scripts/cli.py
+
+extract-credentials: dev-image
+	$(DEV_RUN) python scripts/extract_credentials.py $(APK)
 
 pre-push: dev-image
 	bash scripts/pre-push.sh

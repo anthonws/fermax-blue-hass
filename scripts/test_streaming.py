@@ -36,7 +36,26 @@ async def main() -> None:
     storage = Path(os.environ.get("FCM_STORAGE", "/fcm_storage"))
     storage.mkdir(parents=True, exist_ok=True)
 
-    api = FermaxBlueApi(user, passwd)
+    # Load API/Firebase credentials
+    creds_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "credentials.json",
+    )
+    if not os.path.exists(creds_path):
+        print(f"Error: {creds_path} not found. Run extract_credentials.py first.")
+        return
+    import json as _json
+    from pathlib import Path as _Path
+
+    creds = _json.loads(_Path(creds_path).read_text())
+
+    api = FermaxBlueApi(
+        user,
+        passwd,
+        auth_url=creds["fermax_auth_url"],
+        base_url=creds["fermax_base_url"],
+        auth_basic=creds["fermax_auth_basic"],
+    )
     listener: FermaxNotificationListener | None = None
 
     try:
@@ -79,7 +98,13 @@ async def main() -> None:
             notif_event.set()
 
         listener = FermaxNotificationListener(
-            storage_path=storage, notification_callback=on_notif
+            storage_path=storage,
+            notification_callback=on_notif,
+            firebase_api_key=creds["firebase_api_key"],
+            firebase_sender_id=creds["firebase_sender_id"],
+            firebase_app_id=creds["firebase_app_id"],
+            firebase_project_id=creds["firebase_project_id"],
+            firebase_package_name=creds["firebase_package_name"],
         )
         fcm_token = await listener.register()
         if not fcm_token:

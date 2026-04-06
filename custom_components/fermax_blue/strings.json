@@ -8,6 +8,20 @@
           "username": "Email",
           "password": "Password"
         }
+      },
+      "credentials": {
+        "title": "API Credentials",
+        "description": "Enter the API and Firebase credentials extracted from your Fermax Blue app. See the integration documentation for instructions on how to obtain these values.",
+        "data": {
+          "fermax_auth_url": "Fermax Auth URL",
+          "fermax_base_url": "Fermax Base URL",
+          "fermax_auth_basic": "Fermax Auth Basic header",
+          "firebase_api_key": "Firebase API Key",
+          "firebase_sender_id": "Firebase Sender ID",
+          "firebase_app_id": "Firebase App ID",
+          "firebase_project_id": "Firebase Project ID",
+          "firebase_package_name": "Firebase Package Name"
+        }
       }
     },
     "error": {

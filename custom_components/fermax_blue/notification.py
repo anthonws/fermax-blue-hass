@@ -12,14 +12,6 @@ from typing import Any
 from firebase_messaging import FcmPushClient
 from firebase_messaging.fcmregister import FcmRegister, FcmRegisterConfig
 
-from .const import (
-    FIREBASE_API_KEY,
-    FIREBASE_APP_ID,
-    FIREBASE_PACKAGE_NAME,
-    FIREBASE_PROJECT_ID,
-    FIREBASE_SENDER_ID,
-)
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -30,17 +22,23 @@ class FermaxNotificationListener:
         self,
         storage_path: Path,
         notification_callback: Callable[[dict[str, Any], str], None],
+        *,
+        firebase_api_key: str,
+        firebase_sender_id: int | str,
+        firebase_app_id: str,
+        firebase_project_id: str,
+        firebase_package_name: str,
     ) -> None:
         self._storage_path = storage_path
         self._notification_callback = notification_callback
         self._credentials: dict | None = None
         self._push_client: FcmPushClient | None = None
         self._fcm_config = FcmRegisterConfig(
-            project_id=FIREBASE_PROJECT_ID,
-            app_id=FIREBASE_APP_ID,
-            api_key=FIREBASE_API_KEY,
-            messaging_sender_id=str(FIREBASE_SENDER_ID),
-            bundle_id=FIREBASE_PACKAGE_NAME,
+            project_id=firebase_project_id,
+            app_id=firebase_app_id,
+            api_key=firebase_api_key,
+            messaging_sender_id=str(firebase_sender_id),
+            bundle_id=firebase_package_name,
         )
         self._credentials_file = storage_path / "fermax_fcm_credentials.json"
 

@@ -13,12 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .const import (
-    APP_HEADERS,
-    FERMAX_AUTH_BASIC,
-    FERMAX_AUTH_URL,
-    FERMAX_BASE_URL,
-)
+from .const import APP_HEADERS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,11 +117,18 @@ class FermaxBlueApi:
         username: str,
         password: str,
         client: httpx.AsyncClient | None = None,
+        *,
+        auth_url: str,
+        base_url: str,
+        auth_basic: str,
     ) -> None:
         self._username = username
         self._password = password
         self._access_token: str | None = None
         self._token_expires_at: float = 0
+        self._auth_url = auth_url
+        self._base_url = base_url
+        self._auth_basic = auth_basic
 
         self._client = client
         self._owns_client = client is None
@@ -164,13 +166,13 @@ class FermaxBlueApi:
         payload = f"grant_type=password&password={password}&username={username}"
 
         headers = {
-            "Authorization": FERMAX_AUTH_BASIC,
+            "Authorization": self._auth_basic,
             "Content-Type": "application/x-www-form-urlencoded",
             **APP_HEADERS,
         }
 
         client = await self._get_client()
-        response = await client.post(FERMAX_AUTH_URL, headers=headers, content=payload)
+        response = await client.post(self._auth_url, headers=headers, content=payload)
 
         data = response.json()
         if "error" in data:
@@ -190,7 +192,7 @@ class FermaxBlueApi:
         """Make an authenticated request with retry on transient errors."""
         await self._ensure_authenticated()
         client = await self._get_client()
-        url = f"{FERMAX_BASE_URL}{path}"
+        url = f"{self._base_url}{path}"
         headers = self._get_auth_headers()
         last_exc: Exception | None = None
 

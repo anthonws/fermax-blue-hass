@@ -8,13 +8,20 @@ import pytest
 from custom_components.fermax_blue.api import (
     FermaxAuthError,
     FermaxBlueApi,
+    OpeningRecord,
 )
 
 
 @pytest.fixture
 def api():
     """Return a FermaxBlueApi instance."""
-    return FermaxBlueApi("test@example.com", "testpass123")
+    return FermaxBlueApi(
+        "test@example.com",
+        "testpass123",
+        auth_url="https://oauth.example.com/token",
+        base_url="https://api.example.com",
+        auth_basic="Basic dGVzdDp0ZXN0",
+    )
 
 
 @pytest.fixture
@@ -32,6 +39,21 @@ def _mock_response(status_code, **kwargs):
         request=httpx.Request("GET", "https://test.com"),
         **kwargs,
     )
+
+
+_DEVICE_INFO_JSON = {
+    "deviceId": "dev1",
+    "connectionState": "Connected",
+    "status": "ACTIVATED",
+    "family": "MONITOR",
+    "type": "VEO-XL",
+    "subtype": "WIFI",
+    "unitNumber": 42,
+    "photocaller": True,
+    "streamingMode": "video_call",
+    "isMonitor": True,
+    "wirelessSignal": 4,
+}
 
 
 class TestAuthentication:
@@ -102,22 +124,7 @@ class TestAuthentication:
                 "expires_in": 3600,
             },
         )
-        data_resp = _mock_response(
-            200,
-            json={
-                "deviceId": "dev1",
-                "connectionState": "Connected",
-                "status": "ACTIVATED",
-                "family": "MONITOR",
-                "type": "VEO-XL",
-                "subtype": "WIFI",
-                "unitNumber": 42,
-                "photocaller": True,
-                "streamingMode": "video_call",
-                "isMonitor": True,
-                "wirelessSignal": 4,
-            },
-        )
+        data_resp = _mock_response(200, json=_DEVICE_INFO_JSON)
 
         with (
             patch("httpx.AsyncClient.post", return_value=auth_resp),
@@ -127,6 +134,53 @@ class TestAuthentication:
 
         assert info.device_id == "dev1"
         assert api._access_token == "new_token"
+
+
+class TestRetryLogic:
+    """Test request retry with backoff."""
+
+    @pytest.mark.asyncio
+    async def test_retry_on_500(self, authenticated_api):
+        fail_resp = _mock_response(500, text="error")
+        ok_resp = _mock_response(200, json=_DEVICE_INFO_JSON)
+        with (
+            patch("httpx.AsyncClient.get", side_effect=[fail_resp, ok_resp]),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            info = await authenticated_api.get_device_info("dev1")
+        assert info.device_id == "dev1"
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_401(self, authenticated_api):
+        resp = _mock_response(401, json={"error": "unauthorized"})
+        with (
+            patch("httpx.AsyncClient.get", return_value=resp),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await authenticated_api.get_device_info("dev1")
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted(self, authenticated_api):
+        fail_resp = _mock_response(500, text="error")
+        with (
+            patch("httpx.AsyncClient.get", return_value=fail_resp),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await authenticated_api.get_device_info("dev1")
+
+    @pytest.mark.asyncio
+    async def test_retry_on_connection_error(self, authenticated_api):
+        ok_resp = _mock_response(200, json=_DEVICE_INFO_JSON)
+        with (
+            patch(
+                "httpx.AsyncClient.get",
+                side_effect=[httpx.ConnectError("fail"), ok_resp],
+            ),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            info = await authenticated_api.get_device_info("dev1")
+        assert info.device_id == "dev1"
 
 
 class TestPairings:
@@ -209,6 +263,27 @@ class TestDoorControl:
                 {"block": 100, "subblock": -1, "number": 0},
             )
 
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_open_door_incall_success(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.post", return_value=resp) as mock_post:
+            result = await authenticated_api.open_door_incall(
+                "dev1", room_id="room_123", fcm_token="tok", call_as="dev1"
+            )
+        assert result is True
+        call_args = mock_post.call_args
+        body = call_args.kwargs.get("json", {})
+        assert body["deviceId"] == "dev1"
+        assert body["roomId"] == "room_123"
+        assert body["unitId"] == "dev1"
+
+    @pytest.mark.asyncio
+    async def test_open_door_incall_failure(self, authenticated_api):
+        resp = _mock_response(500, text="error")
+        with patch("httpx.AsyncClient.post", return_value=resp):
+            result = await authenticated_api.open_door_incall("dev1")
         assert result is False
 
 
@@ -335,8 +410,69 @@ class TestAppToken:
         assert result is True
 
 
+class TestDeviceControls:
+    """Test DND, F1, call guard, photo caller."""
+
+    @pytest.mark.asyncio
+    async def test_get_dnd_enabled(self, authenticated_api):
+        resp = _mock_response(200, json={"muted": True})
+        with patch("httpx.AsyncClient.get", return_value=resp):
+            result = await authenticated_api.get_dnd_status("dev1", "fcm123")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_get_dnd_disabled(self, authenticated_api):
+        resp = _mock_response(200, json={"muted": False})
+        with patch("httpx.AsyncClient.get", return_value=resp):
+            result = await authenticated_api.get_dnd_status("dev1", "fcm123")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_set_dnd(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.post", return_value=resp):
+            await authenticated_api.set_dnd("dev1", "fcm123", enabled=True)
+
+    @pytest.mark.asyncio
+    async def test_press_f1(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.post", return_value=resp):
+            await authenticated_api.press_f1("dev1")
+
+    @pytest.mark.asyncio
+    async def test_press_f1_failure(self, authenticated_api):
+        resp = _mock_response(403, text="forbidden")
+        with (
+            patch("httpx.AsyncClient.post", return_value=resp),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await authenticated_api.press_f1("dev1")
+
+    @pytest.mark.asyncio
+    async def test_call_guard(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.post", return_value=resp):
+            await authenticated_api.call_guard("dev1")
+
+    @pytest.mark.asyncio
+    async def test_enable_photo_caller(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.put", return_value=resp) as mock_put:
+            await authenticated_api.set_photo_caller("dev1", enabled=True)
+        call_args = mock_put.call_args
+        assert call_args.kwargs["params"]["value"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_disable_photo_caller(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.put", return_value=resp) as mock_put:
+            await authenticated_api.set_photo_caller("dev1", enabled=False)
+        call_args = mock_put.call_args
+        assert call_args.kwargs["params"]["value"] == "false"
+
+
 class TestCallLog:
-    """Test call log and photo retrieval."""
+    """Test call log, photo, and notification ACK."""
 
     @pytest.mark.asyncio
     async def test_get_call_log_empty(self, authenticated_api):
@@ -370,6 +506,66 @@ class TestCallLog:
             photo = await authenticated_api.get_call_photo("photo_123")
 
         assert photo is None
+
+    @pytest.mark.asyncio
+    async def test_ack_call_notification(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.post", return_value=resp) as mock_post:
+            await authenticated_api.ack_notification("msg1", is_call=True)
+        call_args = mock_post.call_args
+        assert "/callmanager/api/v1/message/ack" in call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_ack_info_notification(self, authenticated_api):
+        resp = _mock_response(200, text="ok")
+        with patch("httpx.AsyncClient.post", return_value=resp) as mock_post:
+            await authenticated_api.ack_notification("msg1", is_call=False)
+        call_args = mock_post.call_args
+        assert "/notification/api/v1/message/ack" in call_args.args[0]
+
+
+class TestOpeningHistory:
+    """Test opening history retrieval."""
+
+    @pytest.mark.asyncio
+    async def test_get_openings(self, authenticated_api):
+        resp = _mock_response(
+            200,
+            json={
+                "openDoorRegistry": [
+                    {
+                        "id": "abc",
+                        "email": "user@test.com",
+                        "instant": "2024-01-01T10:00:00Z",
+                        "accessName": "G",
+                        "accessType": "GENERAL",
+                        "guestEmail": None,
+                    },
+                    {
+                        "id": "def",
+                        "email": "guest@test.com",
+                        "instant": "2024-01-01T11:00:00Z",
+                        "accessName": "G",
+                        "accessType": "GENERAL",
+                        "guestEmail": "guest@test.com",
+                    },
+                ]
+            },
+        )
+        with patch("httpx.AsyncClient.get", return_value=resp):
+            result = await authenticated_api.get_opening_history("dev1")
+        assert len(result) == 2
+        assert isinstance(result[0], OpeningRecord)
+        assert result[0].user == "user@test.com"
+        assert result[0].timestamp == "2024-01-01T10:00:00Z"
+        assert result[1].guest_email == "guest@test.com"
+
+    @pytest.mark.asyncio
+    async def test_get_openings_empty(self, authenticated_api):
+        resp = _mock_response(200, json={"openDoorRegistry": []})
+        with patch("httpx.AsyncClient.get", return_value=resp):
+            result = await authenticated_api.get_opening_history("dev1")
+        assert result == []
 
 
 class TestClientLifecycle:

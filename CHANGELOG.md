@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.0] - 2026-04-06
+
+### Changed
+- **User-provided credentials** — all API and Firebase credentials must now be provided during setup. No credentials are shipped in the integration code
+- Config flow now has two steps: login (email/password) + credentials (API URLs, Firebase keys)
+- Removed all obfuscated/hardcoded credential constants from `const.py`
+
+### Added
+- `scripts/extract_credentials.py` — extracts Firebase credentials from the APK and attempts AES decryption of OAuth credentials from decompiled source
+- `credentials.example.json` template for reference
+- `make extract-credentials APK=<path>` Makefile target
+- Comprehensive documentation on how to obtain credentials, including community sources for the OAuth client
+- Acknowledgments section crediting the open-source Fermax community
+- Translations for the credentials step in all 10 supported languages
+
 ## [0.11.0] - 2026-04-06
 
 ### Changed

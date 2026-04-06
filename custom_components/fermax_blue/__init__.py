@@ -15,6 +15,14 @@ from homeassistant.helpers.httpx_client import create_async_httpx_client
 
 from .api import FermaxBlueApi
 from .const import (
+    CONF_FERMAX_AUTH_BASIC,
+    CONF_FERMAX_AUTH_URL,
+    CONF_FERMAX_BASE_URL,
+    CONF_FIREBASE_API_KEY,
+    CONF_FIREBASE_APP_ID,
+    CONF_FIREBASE_PACKAGE_NAME,
+    CONF_FIREBASE_PROJECT_ID,
+    CONF_FIREBASE_SENDER_ID,
     CONF_RECORDING_RETENTION,
     CONF_SCAN_INTERVAL,
     DEFAULT_RECORDING_RETENTION,
@@ -37,6 +45,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
         entry.data[CONF_USERNAME],
         entry.data[CONF_PASSWORD],
         client=client,
+        auth_url=entry.data[CONF_FERMAX_AUTH_URL],
+        base_url=entry.data[CONF_FERMAX_BASE_URL],
+        auth_basic=entry.data[CONF_FERMAX_AUTH_BASIC],
     )
 
     try:
@@ -51,11 +62,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
     auto_response_file = (
         entry.options.get("auto_response_file", "") if auto_response_enabled else ""
     )
+    firebase_config: dict[str, str | int] = {
+        "firebase_api_key": entry.data[CONF_FIREBASE_API_KEY],
+        "firebase_sender_id": int(entry.data[CONF_FIREBASE_SENDER_ID]),
+        "firebase_app_id": entry.data[CONF_FIREBASE_APP_ID],
+        "firebase_project_id": entry.data[CONF_FIREBASE_PROJECT_ID],
+        "firebase_package_name": entry.data[CONF_FIREBASE_PACKAGE_NAME],
+    }
+
     coordinators: list[FermaxBlueCoordinator] = []
 
     for pairing in pairings:
         coordinator = FermaxBlueCoordinator(
-            hass, api, pairing, scan_interval, auto_response_file
+            hass, api, pairing, scan_interval, auto_response_file, firebase_config
         )
         await coordinator.async_config_entry_first_refresh()
 

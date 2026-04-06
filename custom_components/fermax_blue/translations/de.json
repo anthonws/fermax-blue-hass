@@ -3,10 +3,24 @@
     "step": {
       "user": {
         "title": "Fermax Blue Anmeldung",
-        "description": "Geben Sie Ihre Fermax Blue Anmeldedaten ein.",
+        "description": "Geben Sie Ihre Fermax Blue-Anmeldedaten ein.",
         "data": {
           "username": "E-Mail",
           "password": "Passwort"
+        }
+      },
+      "credentials": {
+        "title": "API-Anmeldedaten",
+        "description": "Geben Sie die API- und Firebase-Anmeldedaten ein, die aus Ihrer Fermax Blue-App extrahiert wurden. Siehe die Integrationsdokumentation für Anweisungen.",
+        "data": {
+          "fermax_auth_url": "Fermax Auth URL",
+          "fermax_base_url": "Fermax Base URL",
+          "fermax_auth_basic": "Fermax Auth Basic header",
+          "firebase_api_key": "Firebase API Key",
+          "firebase_sender_id": "Firebase Sender ID",
+          "firebase_app_id": "Firebase App ID",
+          "firebase_project_id": "Firebase Project ID",
+          "firebase_package_name": "Firebase Package Name"
         }
       }
     },

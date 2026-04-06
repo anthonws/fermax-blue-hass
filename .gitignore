@@ -20,6 +20,8 @@ docs/apk-analysis-*.md
 test_frame.jpg
 scripts/test_*_run.py
 
+# API/Firebase credentials (never commit — see credentials.example.json)
+credentials.json
 # FCM credentials (never commit)
 **/fermax_fcm_credentials.json
 .playwright-mcp/

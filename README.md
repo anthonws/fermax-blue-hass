@@ -73,6 +73,57 @@ After setup, you can configure the integration options:
    - **Auto-respond to doorbell** — when enabled, answers the call automatically: starts video stream, sends audio file through the intercom speaker, records the call to MP4. When disabled, only triggers notifications without interacting with the intercom
    - **Audio file path** — WAV/MP3 file for auto-response (e.g., `/config/media/mi_mensaje.wav`)
 
+### API Credentials
+
+During setup, after entering your Fermax Blue username and password, you will be asked for the **API and Firebase credentials**. These values are needed to communicate with Fermax's servers and receive push notifications.
+
+The integration requires:
+- **Fermax API**: Auth URL, Base URL, Auth Basic header (OAuth client credentials)
+- **Firebase**: API Key, Sender ID, App ID, Project ID, Package Name
+
+A `credentials.example.json` file is included as a template. Copy it to `credentials.json` and fill in your values.
+
+#### How to Obtain Credentials
+
+##### Firebase credentials (from the APK)
+
+The Firebase credentials can be extracted automatically from the official Fermax Blue Android APK:
+
+1. **Download the Fermax Blue APK** from your device or a trusted source (e.g., Softonic)
+2. **Run the extraction script:**
+   ```bash
+   make extract-credentials APK=/path/to/fermax-blue.apk
+   ```
+   Or directly: `python scripts/extract_credentials.py /path/to/fermax-blue.apk`
+3. The script extracts Firebase credentials from `resources.arsc` and API URLs from the binary. It also attempts to decrypt AES-encrypted OAuth credentials from the decompiled source if a JADX output directory is found alongside the APK.
+
+The script reliably finds: `firebase_api_key`, `firebase_sender_id`, `firebase_app_id`, `firebase_project_id`, `firebase_package_name`, `fermax_auth_url`, and `fermax_base_url`.
+
+##### OAuth client credentials (fermax_auth_basic)
+
+The OAuth `client_id` and `client_secret` (encoded as a `Basic` auth header) are available thanks to the work of the open-source Fermax community. They can be found in these projects:
+
+- [fermax-blue-intercom](https://github.com/marcosav/fermax-blue-intercom) by @marcosav
+- [hass-bluecon](https://github.com/AfonsoFGarcia/hass-bluecon) by @AfonsoFGarcia and the [fork](https://github.com/patrikulus/hass-bluecon) by @patrikulus
+- [HASS-BlueCon](https://github.com/cvc90/HASS-BlueCon) by @cvc90
+- [Fermax-Blue-Intercom](https://github.com/cvc90/Fermax-Blue-Intercom) by @cvc90
+
+This integration exists thanks to the reverse-engineering work of these developers. If you find this project useful, please consider starring their repositories.
+
+##### Manual extraction (fallback)
+
+If the script doesn't find all values, decompile the APK with JADX and search manually:
+
+1. **API URLs**: search for `oauth/token` and `fermax.io` in `Urls.java`
+2. **Firebase**: found in `google-services.json` inside the APK:
+   - `firebase_api_key` → `client[0].api_key[0].current_key`
+   - `firebase_sender_id` → `project_info.project_number`
+   - `firebase_app_id` → `client[0].client_info.mobilesdk_app_id`
+   - `firebase_project_id` → `project_info.project_id`
+   - `firebase_package_name` → `client[0].client_info.android_client_info.package_name`
+
+> **Legal note:** These credentials are part of a publicly distributed application. Extracting configuration from software you own as a paying customer for personal interoperability use is a legitimate exercise of your consumer rights.
+
 ### Dedicated User for Doorbell Notifications (Recommended)
 
 Fermax Blue only allows **one active push notification token per user**. If you use your main account for the integration, your mobile app will stop receiving doorbell notifications (or vice versa).
@@ -304,11 +355,17 @@ Features available in the Fermax Blue mobile app that are not yet implemented:
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## Credits
+## Acknowledgments
 
-- Inspired by [HASS-BlueCon](https://github.com/AfonsoFGarcia/hass-bluecon) by Afonso Garcia
-- Door opening based on [fermax-blue-intercom](https://github.com/marcosav/fermax-blue-intercom) by marcosav
-- Firebase push notifications via [firebase-messaging](https://github.com/sdb9696/firebase-messaging)
+This integration would not be possible without the reverse-engineering work of the Fermax open-source community:
+
+- **[@marcosav](https://github.com/marcosav)** — [fermax-blue-intercom](https://github.com/marcosav/fermax-blue-intercom): original script for Fermax Blue API interaction and OAuth credential discovery
+- **[@AfonsoFGarcia](https://github.com/AfonsoFGarcia)** — [hass-bluecon](https://github.com/AfonsoFGarcia/hass-bluecon): first Home Assistant integration for Fermax Blue, BlueCon library
+- **[@patrikulus](https://github.com/patrikulus)** — [hass-bluecon fork](https://github.com/patrikulus/hass-bluecon): working fork with improved authentication
+- **[@cvc90](https://github.com/cvc90)** — [HASS-BlueCon](https://github.com/cvc90/HASS-BlueCon) and [Fermax-Blue-Intercom](https://github.com/cvc90/Fermax-Blue-Intercom): community maintenance and documentation
+- **[firebase-messaging](https://github.com/sdb9696/firebase-messaging)** by @sdb9696: FCM push notification library that enables real-time doorbell detection
+
+Thanks to the collaborative work of this community, the OAuth credentials needed for third-party integrations are publicly available. Without their effort, projects like this one would not be possible.
 
 ## Disclaimer
 
