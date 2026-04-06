@@ -94,7 +94,9 @@ For each paired intercom device, the integration creates:
 | Entity | Type | Description |
 |--------|------|-------------|
 | `camera.<name>_visitor` | Camera | Live MJPEG stream when active; last frame as preview when idle |
-| `event.<name>_doorbell` | Event | Fires `ring` event when someone rings the doorbell |
+| `event.<name>_doorbell` | Event | Fires when someone rings the doorbell |
+| `event.<name>_door_opened` | Event | Fires when a door is successfully opened |
+| `event.<name>_camera_on` | Event | Fires when camera preview / live stream starts |
 | `binary_sensor.<name>_connection` | Binary Sensor | Device connectivity (entities go unavailable when disconnected) |
 | `lock.<name>_<door>_lock` | Lock | Lock/unlock (open) the door |
 | `button.<name>_<door>_open` | Button | One-press door opening |
@@ -247,6 +249,22 @@ make pre-push       # Full CI replica (same as GitHub Actions)
 ```
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/).
+
+## Roadmap
+
+Features available in the Fermax Blue mobile app that are not yet implemented:
+
+| Feature | Complexity | Description |
+|---------|-----------|-------------|
+| **Two-way audio** | High | Send audio to the intercom during a call. Requires a real audio source (microphone connected to HA) and mediasoup sendTransport with audio producer |
+| **Switch camera during call** | Low | Switch between cameras on multi-camera intercoms (`/device/incall/changevideosource`) |
+| **F1 during active call** | Low | Trigger the F1 auxiliary function while a stream is active (`/device/incall/f1`) |
+| **Guest management** | Medium | Add, remove, and authorize guest users for the intercom via the API |
+| **Delete call history** | Low | Clear call log entries (`DELETE /callmanager/api/v1/callregistry/participants`) |
+| **Delete opening history** | Low | Clear door opening records (`DELETE /rexistro/api/v1/opendoorregistry`) |
+| **Rename house/doors** | Low | Change the display name of the house or doors (`PATCH /pairing/api/v3/pairings/{id}/tag/`) |
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Credits
 
