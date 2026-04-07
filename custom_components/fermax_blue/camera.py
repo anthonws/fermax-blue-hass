@@ -30,6 +30,24 @@ try:
 except ImportError:
     _WEBRTC_AVAILABLE = False
 
+# Pre-import dns rdtypes that aioice/aiortc will need during ICE gathering.
+# dnspython lazily imports these on first use; if that first use happens inside
+# a datagram_received callback the HA loop-guardian flags them as blocking calls.
+# Importing them here (module-load time runs in the executor) warms sys.modules
+# so the loop-time lookup is a free cache hit.
+if _WEBRTC_AVAILABLE:
+    try:
+        import dns.rdtypes.ANY.A      # noqa: F401
+        import dns.rdtypes.ANY.AAAA   # noqa: F401
+        import dns.rdtypes.ANY.CNAME  # noqa: F401
+        import dns.rdtypes.ANY.PTR    # noqa: F401
+        import dns.rdtypes.ANY.SRV    # noqa: F401
+        import dns.rdtypes.ANY.TXT    # noqa: F401
+        import dns.rdtypes.IN.A       # noqa: F401
+        import dns.rdtypes.IN.AAAA    # noqa: F401
+    except ImportError:
+        pass
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
