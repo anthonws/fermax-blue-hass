@@ -196,13 +196,31 @@ class FermaxCamera(FermaxBlueEntity, Camera):
 
         session = self.coordinator.stream_session
         if not session or not session.is_active or session.video_relay is None:
-            send_message(
-                WebRTCError(
-                    code="no_stream",
-                    message="No active intercom stream. Start camera preview first.",
-                )
+            # No active stream — auto-start camera preview and wait for relay
+            _LOGGER.info(
+                "WebRTC offer received but no active stream — auto-starting camera preview"
             )
-            return
+            await self.coordinator.start_camera_preview()
+
+            # Wait up to 25 s for the mediasoup session + relay to be ready
+            for _ in range(50):
+                await asyncio.sleep(0.5)
+                session = self.coordinator.stream_session
+                if session and session.is_active and session.video_relay is not None:
+                    _LOGGER.info("Stream ready — proceeding with WebRTC negotiation")
+                    break
+            else:
+                _LOGGER.warning(
+                    "Camera preview did not start in time for WebRTC session %s",
+                    session_id,
+                )
+                send_message(
+                    WebRTCError(
+                        code="preview_timeout",
+                        message="Camera preview timed out. Try again.",
+                    )
+                )
+                return
 
         pc = RTCPeerConnection()
 
