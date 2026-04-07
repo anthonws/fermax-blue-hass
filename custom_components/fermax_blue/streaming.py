@@ -518,6 +518,7 @@ class FermaxStreamSession:
         self._frame_task: asyncio.Task | None = None
         self._latest_frame: bytes | None = None
         self._active = False
+        self._starting = False  # True while _start_inner is running
         self._room: Any = None
         self._recording_path: str | None = None
         self.video_relay: _TrackRelay | None = None
@@ -536,12 +537,20 @@ class FermaxStreamSession:
 
     async def start(self) -> bool:
         """Start the full streaming pipeline."""
+        self._starting = True
         try:
             return await self._start_inner()
+        except asyncio.CancelledError:
+            _LOGGER.debug("Stream setup cancelled (room ended mid-setup)")
+            return False
         except Exception:
             _LOGGER.exception("Failed to start stream session")
-            await self.stop()
             return False
+        finally:
+            self._starting = False
+            if not self._active:
+                # Ensure cleanup if _start_inner raised before setting _active
+                await self.stop()
 
     async def _start_inner(self) -> bool:
         from pymediasoup import Device
@@ -594,6 +603,10 @@ class FermaxStreamSession:
 
         # 4. Consume video from SFU
         device_caps = self._device.rtpCapabilities
+        if not self._active and self._starting:
+            # stop() was called while we were setting up — abort cleanly
+            _LOGGER.debug("Stream setup aborted before video consume (room ended)")
+            return False
         consume_result = await self._signaling.consume_transport(
             transport_id=video_tp.id,
             producer_id=room.video_producer_id,
@@ -703,6 +716,9 @@ class FermaxStreamSession:
             return str(our_producer_id)
 
         # 6. Produce audio (48kHz like the APK) — triggers onProduce → pickup
+        if not self._active and self._starting:
+            _LOGGER.debug("Stream setup aborted before produce/pickup (room ended)")
+            return False
         self._switchable_track = _create_switchable_audio_track()
         self._audio_producer = await self._send_transport.produce(
             track=self._switchable_track,
@@ -975,7 +991,8 @@ class FermaxStreamSession:
 
     async def stop(self) -> None:
         """Stop the streaming session and clean up."""
-        self._active = False
+        self._active = False   # Signal _start_inner guards to abort
+        self._starting = False
 
         if self._frame_task and not self._frame_task.done():
             self._frame_task.cancel()
