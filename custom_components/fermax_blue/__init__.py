@@ -9,9 +9,11 @@ from datetime import timedelta
 from pathlib import Path
 
 import voluptuous as vol
+import httpx
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.httpx_client import create_async_httpx_client
 
 from .api import FermaxBlueApi
@@ -81,6 +83,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
     try:
         await api.authenticate()
         pairings = await api.get_pairings()
+    except (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError) as err:
+        # Transient network failure (e.g. HA started before the network was
+        # ready, or the Fermax API was momentarily unreachable).  Raise
+        # ConfigEntryNotReady so HA retries setup automatically after ~30 s
+        # instead of marking the integration as permanently failed.
+        await api.close()
+        raise ConfigEntryNotReady(
+            f"Cannot reach the Fermax API ({err.__class__.__name__}): {err}"
+        ) from err
     except Exception:
         await api.close()
         raise
