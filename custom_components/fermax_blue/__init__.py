@@ -10,6 +10,7 @@ from pathlib import Path
 
 import voluptuous as vol
 import httpx
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, ServiceCall
@@ -39,6 +40,30 @@ from .coordinator import FermaxBlueCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 type FermaxBlueConfigEntry = ConfigEntry[list[FermaxBlueCoordinator]]
+
+_WWW_DIR = Path(__file__).parent / "www"
+_WWW_URL  = "/local/fermax_blue"
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Register static frontend resources (Lovelace card JS).
+
+    Called once per HA startup regardless of how many config entries exist.
+    The card file is served at /local/fermax_blue/fermax-intercom-card.js.
+    Users need to add that URL as a Lovelace resource (once, manually):
+      Settings → Dashboards → ⋮ → Resources → + → JavaScript Module →
+      /local/fermax_blue/fermax-intercom-card.js
+    """
+    try:
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(_WWW_URL, str(_WWW_DIR), cache_headers=False),
+        ])
+        _LOGGER.debug("Registered Fermax Blue frontend resources at %s", _WWW_URL)
+    except Exception:
+        # Path may already be registered if integration was reloaded;
+        # not fatal — the files are still served from the first registration.
+        _LOGGER.debug("Fermax Blue frontend resources already registered")
+    return True
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
