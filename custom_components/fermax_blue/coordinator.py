@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -79,6 +80,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._auto_response_file = auto_response_file
         self._firebase_config = firebase_config or {}
         self._processed_notifications: set[str] = set()
+        self._webrtc_peers: dict[str, Any] = {}  # session_id -> RTCPeerConnection
 
     @property
     def last_photo(self) -> bytes | None:
@@ -521,9 +523,42 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             await self._stream_session.send_audio(self._auto_response_file)
             _LOGGER.info("Auto-response sent: %s", self._auto_response_file)
 
+    def register_webrtc_peer(self, session_id: str, pc: Any) -> None:
+        """Register a WebRTC RTCPeerConnection for lifecycle management."""
+        self._webrtc_peers[session_id] = pc
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange() -> None:
+            state = pc.connectionState
+            _LOGGER.debug("WebRTC peer %s connection state: %s", session_id, state)
+            if state in ("failed", "closed", "disconnected"):
+                self._webrtc_peers.pop(session_id, None)
+
+    def close_webrtc_peer(self, session_id: str) -> None:
+        """Close a specific WebRTC peer connection."""
+        pc = self._webrtc_peers.pop(session_id, None)
+        if pc:
+            self.hass.async_create_task(_close_pc(pc))
+
+    async def _close_all_webrtc_peers(self) -> None:
+        """Close all active WebRTC peer connections."""
+        peers = dict(self._webrtc_peers)
+        self._webrtc_peers.clear()
+        for sid, pc in peers.items():
+            _LOGGER.debug("Closing WebRTC peer %s on stream stop", sid)
+            with contextlib.suppress(Exception):
+                await pc.close()
+
     async def stop_stream(self) -> None:
-        """Stop the current video stream session."""
+        """Stop the current video stream session and all WebRTC peer connections."""
+        await self._close_all_webrtc_peers()
         if self._stream_session:
             await self._stream_session.stop()
             self._stream_session = None
             self._camera_active = False
+
+
+async def _close_pc(pc: Any) -> None:
+    """Safely close an RTCPeerConnection."""
+    with contextlib.suppress(Exception):
+        await pc.close()

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import socketio
+from aiortc import MediaStreamTrack
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +107,107 @@ def _create_switchable_audio_track() -> Any:
             return frame
 
     return _Track()
+
+
+class _TrackRelay:
+    """Fan-out relay: reads from one source aiortc track, distributes to N subscriber queues."""
+
+    def __init__(self, source: Any, kind: str) -> None:
+        self._source = source
+        self._kind = kind
+        self._subscribers: list[asyncio.Queue[Any]] = []
+        self._task: asyncio.Task | None = None
+        self._active = False
+
+    def start(self) -> None:
+        """Start the background relay task."""
+        self._active = True
+        self._task = asyncio.create_task(self._run(), name=f"relay_{self._kind}")
+
+    async def stop(self) -> None:
+        """Stop the relay and cancel the background task."""
+        self._active = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+        self._task = None
+
+    def create_consumer_track(self) -> "MediaStreamTrack":
+        """Return a new aiortc-compatible track backed by a subscriber queue."""
+        q: asyncio.Queue[Any] = asyncio.Queue(maxsize=30)
+        self._subscribers.append(q)
+        if self._kind == "video":
+            return _VideoRelayConsumerTrack(q, self._subscribers)
+        return _AudioRelayConsumerTrack(q, self._subscribers)
+
+    async def _run(self) -> None:
+        """Read from source track, distribute to all subscriber queues."""
+        from aiortc.mediastreams import MediaStreamError
+
+        try:
+            while self._active:
+                frame = await self._source.recv()
+                for q in list(self._subscribers):
+                    try:
+                        q.put_nowait(frame)
+                    except asyncio.QueueFull:
+                        with contextlib.suppress(asyncio.QueueEmpty):
+                            q.get_nowait()
+                        with contextlib.suppress(asyncio.QueueFull):
+                            q.put_nowait(frame)
+        except (MediaStreamError, asyncio.CancelledError):
+            pass
+        except Exception:
+            _LOGGER.debug("TrackRelay._run error (%s)", self._kind, exc_info=True)
+        finally:
+            self._active = False
+
+
+class _VideoRelayConsumerTrack(MediaStreamTrack):  # type: ignore[misc]
+    """Video track that reads frames from a relay subscriber queue."""
+
+    kind = "video"
+
+    def __init__(
+        self,
+        q: asyncio.Queue[Any],
+        all_subscribers: list[asyncio.Queue[Any]],
+    ) -> None:
+        super().__init__()
+        self._q = q
+        self._all_subscribers = all_subscribers
+
+    async def recv(self) -> Any:
+        return await self._q.get()
+
+    def stop(self) -> None:
+        with contextlib.suppress(ValueError):
+            self._all_subscribers.remove(self._q)
+        super().stop()
+
+
+class _AudioRelayConsumerTrack(MediaStreamTrack):  # type: ignore[misc]
+    """Audio track that reads frames from a relay subscriber queue."""
+
+    kind = "audio"
+
+    def __init__(
+        self,
+        q: asyncio.Queue[Any],
+        all_subscribers: list[asyncio.Queue[Any]],
+    ) -> None:
+        super().__init__()
+        self._q = q
+        self._all_subscribers = all_subscribers
+
+    async def recv(self) -> Any:
+        return await self._q.get()
+
+    def stop(self) -> None:
+        with contextlib.suppress(ValueError):
+            self._all_subscribers.remove(self._q)
+        super().stop()
 
 
 @dataclass
@@ -418,6 +520,10 @@ class FermaxStreamSession:
         self._active = False
         self._room: Any = None
         self._recording_path: str | None = None
+        self.video_relay: _TrackRelay | None = None
+        self.audio_relay: _TrackRelay | None = None
+        self._video_grab_q: asyncio.Queue[Any] | None = None
+        self._audio_grab_q: asyncio.Queue[Any] | None = None
 
     @property
     def is_active(self) -> bool:
@@ -609,7 +715,24 @@ class FermaxStreamSession:
         if self._record:
             self._init_recording()
 
-        # 9. Start frame grabber + audio recorder
+        # 9. Create track relays (fan-out: MJPEG grabber + WebRTC consumers)
+        self.video_relay = _TrackRelay(self._consumer.track, "video")
+        self.video_relay.start()
+        _vq: asyncio.Queue[Any] = asyncio.Queue(maxsize=30)
+        self.video_relay._subscribers.append(_vq)
+        self._video_grab_q = _vq
+
+        if self._audio_consumer:
+            self.audio_relay = _TrackRelay(self._audio_consumer.track, "audio")
+            self.audio_relay.start()
+            _aq: asyncio.Queue[Any] = asyncio.Queue(maxsize=30)
+            self.audio_relay._subscribers.append(_aq)
+            self._audio_grab_q = _aq
+        else:
+            self.audio_relay = None
+            self._audio_grab_q = None
+
+        # 10. Start frame grabber + audio recorder
         self._active = True
         self._frame_task = asyncio.create_task(self._grab_frames())
         if self._audio_consumer:
@@ -783,13 +906,13 @@ class FermaxStreamSession:
         return img
 
     async def _grab_audio(self) -> None:
-        """Capture audio frames from the intercom for recording."""
-        from aiortc.mediastreams import MediaStreamError
-
-        track = self._audio_consumer.track
+        """Capture audio frames from the relay queue for recording."""
         try:
             while self._active:
-                frame = await track.recv()
+                if self._audio_grab_q is None:
+                    await asyncio.sleep(0.1)
+                    continue
+                frame = await self._audio_grab_q.get()
                 if (
                     hasattr(self, "_recording_audio_frames")
                     and self._recording_audio_frames is not None
@@ -798,21 +921,23 @@ class FermaxStreamSession:
                     self._audio_sample_rate = frame.sample_rate
                     raw = frame.to_ndarray().tobytes()
                     self._recording_audio_frames.append(raw)
-        except (MediaStreamError, asyncio.CancelledError):
+        except asyncio.CancelledError:
             pass
         except Exception:
             _LOGGER.debug("Audio grabber error", exc_info=True)
 
     async def _grab_frames(self) -> None:
-        """Read video frames from the consumer track, encode as JPEG."""
+        """Read video frames from the relay queue, encode as JPEG."""
         from aiortc.mediastreams import MediaStreamError
 
-        track = self._consumer.track
-        _LOGGER.info("Frame grabber started, track kind=%s", track.kind)
+        _LOGGER.info("Frame grabber started (relay mode)")
         frame_count = 0
         try:
             while self._active:
-                frame = await track.recv()
+                if self._video_grab_q is None:
+                    await asyncio.sleep(0.1)
+                    continue
+                frame = await self._video_grab_q.get()
                 frame_count += 1
                 img = frame.to_image()
 
@@ -862,6 +987,14 @@ class FermaxStreamSession:
             audio_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await audio_task
+
+        # Stop relays before closing consumer tracks
+        if self.video_relay:
+            await self.video_relay.stop()
+            self.video_relay = None
+        if self.audio_relay:
+            await self.audio_relay.stop()
+            self.audio_relay = None
 
         # Save recording from collected frames
         await self._save_recording()

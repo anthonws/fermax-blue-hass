@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from typing import Any
 
 from aiohttp import web
-from homeassistant.components.camera import Camera
+from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -17,6 +19,16 @@ from .coordinator import FermaxBlueCoordinator
 from .entity import FermaxBlueEntity
 
 _LOGGER = logging.getLogger(__name__)
+
+try:
+    from homeassistant.components.camera.webrtc import (
+        WebRTCAnswer,
+        WebRTCError,
+        WebRTCSendMessage,
+    )
+    _WEBRTC_AVAILABLE = True
+except ImportError:
+    _WEBRTC_AVAILABLE = False
 
 
 async def async_setup_entry(
@@ -34,6 +46,20 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+class _MicTrackSource:
+    """Adapts a browser mic MediaStreamTrack to the switchable track set_source() interface."""
+
+    def __init__(self, track: Any) -> None:
+        self._track = track
+
+    async def recv(self) -> Any:
+        """Return the next audio frame from the browser mic."""
+        try:
+            return await self._track.recv()
+        except Exception:
+            raise StopIteration from None
+
+
 class FermaxCamera(FermaxBlueEntity, Camera):
     """Camera entity with live video streaming and visitor photo capture.
 
@@ -44,6 +70,7 @@ class FermaxCamera(FermaxBlueEntity, Camera):
     """
 
     _attr_translation_key = "visitor"
+    _attr_supported_features = CameraEntityFeature.STREAM
 
     def __init__(self, coordinator: FermaxBlueCoordinator) -> None:
         FermaxBlueEntity.__init__(self, coordinator)
@@ -148,6 +175,99 @@ class FermaxCamera(FermaxBlueEntity, Camera):
     async def async_turn_off(self) -> None:
         """Stop live camera stream."""
         await self.coordinator.stop_stream()
+
+    async def async_handle_async_webrtc_offer(
+        self,
+        offer_sdp: str,
+        session_id: str,
+        send_message: "WebRTCSendMessage",
+    ) -> None:
+        """Handle a WebRTC offer from the browser for live video+audio streaming.
+
+        Creates an RTCPeerConnection, adds relay tracks from the active intercom
+        stream, and returns the SDP answer. Also wires the browser mic to the
+        intercom send transport so the user can speak to the visitor.
+        """
+        if not _WEBRTC_AVAILABLE:
+            _LOGGER.warning("WebRTC types not available in this HA version")
+            return
+
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+
+        session = self.coordinator.stream_session
+        if not session or not session.is_active or session.video_relay is None:
+            send_message(
+                WebRTCError(
+                    code="no_stream",
+                    message="No active intercom stream. Start camera preview first.",
+                )
+            )
+            return
+
+        pc = RTCPeerConnection()
+
+        # Add intercom → browser tracks via relay
+        video_track = session.video_relay.create_consumer_track()
+        pc.addTrack(video_track)
+
+        if session.audio_relay is not None:
+            audio_track = session.audio_relay.create_consumer_track()
+            pc.addTrack(audio_track)
+
+        # Receive browser mic → forward to intercom send transport
+        @pc.on("track")
+        def on_track(track: Any) -> None:
+            if track.kind == "audio" and session and session.is_active:
+                _LOGGER.info("Browser mic track received — forwarding to intercom")
+                if hasattr(session, "_switchable_track") and session._switchable_track:
+                    session._switchable_track.set_source(_MicTrackSource(track))
+
+        # SDP negotiation
+        try:
+            offer = RTCSessionDescription(sdp=offer_sdp, type="offer")
+            await pc.setRemoteDescription(offer)
+            answer = await pc.createAnswer()
+
+            # Wait for ICE gathering to complete before sending the answer
+            gather_complete: asyncio.Event = asyncio.Event()
+
+            @pc.on("icegatheringstatechange")
+            def on_ice_state() -> None:
+                if pc.iceGatheringState == "complete":
+                    gather_complete.set()
+
+            await pc.setLocalDescription(answer)
+            try:
+                await asyncio.wait_for(gather_complete.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "ICE gathering timed out for WebRTC session %s, sending partial SDP",
+                    session_id,
+                )
+        except Exception as err:
+            _LOGGER.exception("WebRTC negotiation failed for session %s", session_id)
+            with contextlib.suppress(Exception):
+                await pc.close()
+            send_message(
+                WebRTCError(
+                    code="negotiation_failed",
+                    message=str(err),
+                )
+            )
+            return
+
+        # Register PC with coordinator for lifecycle cleanup
+        self.coordinator.register_webrtc_peer(session_id, pc)
+
+        # Send SDP answer to browser
+        send_message(WebRTCAnswer(answer=pc.localDescription.sdp))
+        _LOGGER.info("WebRTC answer sent for session %s", session_id)
+
+    @callback
+    def close_webrtc_session(self, session_id: str) -> None:
+        """Called by HA when the browser closes a WebRTC session."""
+        _LOGGER.debug("Closing WebRTC session %s", session_id)
+        self.coordinator.close_webrtc_peer(session_id)
 
     @property
     def is_streaming(self) -> bool:
