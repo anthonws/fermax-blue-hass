@@ -262,6 +262,13 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 return
 
         # --- Step 3: Add relay tracks and complete negotiation ---
+        # Guard: browser may have retried and closed this session while we waited
+        if session_id not in self._pending_pcs:
+            _LOGGER.debug(
+                "WebRTC session %s was closed by browser while waiting for relay", session_id
+            )
+            return
+
         video_track = session.video_relay.create_consumer_track()
         pc.addTrack(video_track)
 
@@ -317,21 +324,32 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 return  # end-of-candidates signal — nothing to do
             from aiortc.sdp import candidate_from_sdp
 
-            # HA may pass a dataclass, dict, or bare string
+            # HA may pass a dataclass (camelCase or snake_case attrs), dict, or bare string
             if hasattr(candidate, "candidate"):
                 candidate_str = candidate.candidate
-                sdp_mid = getattr(candidate, "sdpMid", None)
-                sdp_mline_index = getattr(candidate, "sdpMLineIndex", None)
+                # Try camelCase (WebRTC spec) then snake_case (Python convention)
+                sdp_mid = getattr(candidate, "sdpMid", None) or getattr(candidate, "sdp_mid", None)
+                _sml = getattr(candidate, "sdpMLineIndex", None)
+                sdp_mline_index = _sml if _sml is not None else getattr(candidate, "sdp_mline_index", None)
             elif isinstance(candidate, dict):
                 candidate_str = candidate.get("candidate", "")
-                sdp_mid = candidate.get("sdpMid")
-                sdp_mline_index = candidate.get("sdpMLineIndex")
+                sdp_mid = candidate.get("sdpMid") or candidate.get("sdp_mid")
+                _sml = candidate.get("sdpMLineIndex")
+                sdp_mline_index = _sml if _sml is not None else candidate.get("sdp_mline_index")
             else:
                 candidate_str = str(candidate)
                 sdp_mid = None
                 sdp_mline_index = None
 
             if not candidate_str or not candidate_str.strip():
+                return  # end-of-candidates marker
+
+            # Both routing keys missing — skip rather than let aiortc raise ValueError
+            if sdp_mid is None and sdp_mline_index is None:
+                _LOGGER.debug(
+                    "Skipping ICE candidate for session %s: no sdpMid or sdpMLineIndex",
+                    session_id,
+                )
                 return
 
             # Strip the "candidate:" prefix that browsers include
