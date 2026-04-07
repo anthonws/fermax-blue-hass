@@ -5,7 +5,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from typing import Any
+
+# Disable mDNS ICE candidate gathering in aioice (used by aiortc).
+# aioice reads USE_ICE_MDNS at import time so this must be set before the first
+# `import aiortc` / `import aioice` anywhere in the process.  Integration
+# modules are loaded in the executor at HA startup, well before any WebRTC
+# offer triggers the lazy aiortc import, so setting it here is sufficient.
+# Without this, aioice binds a multicast socket and calls dnspython's
+# import_module() inside datagram_received callbacks — on the event loop —
+# which HA's loop-guardian flags as blocking I/O for every new DNS record type
+# it encounters (A, AAAA, PTR, SRV, …).  mDNS candidates aren't needed for
+# same-LAN browser↔HA connectivity; host/STUN candidates are sufficient.
+os.environ.setdefault("USE_ICE_MDNS", "0")
 
 from aiohttp import web
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -30,23 +43,6 @@ try:
 except ImportError:
     _WEBRTC_AVAILABLE = False
 
-# Pre-import dns rdtypes that aioice/aiortc will need during ICE gathering.
-# dnspython lazily imports these on first use; if that first use happens inside
-# a datagram_received callback the HA loop-guardian flags them as blocking calls.
-# Importing them here (module-load time runs in the executor) warms sys.modules
-# so the loop-time lookup is a free cache hit.
-if _WEBRTC_AVAILABLE:
-    try:
-        import dns.rdtypes.ANY.A      # noqa: F401
-        import dns.rdtypes.ANY.AAAA   # noqa: F401
-        import dns.rdtypes.ANY.CNAME  # noqa: F401
-        import dns.rdtypes.ANY.PTR    # noqa: F401
-        import dns.rdtypes.ANY.SRV    # noqa: F401
-        import dns.rdtypes.ANY.TXT    # noqa: F401
-        import dns.rdtypes.IN.A       # noqa: F401
-        import dns.rdtypes.IN.AAAA    # noqa: F401
-    except ImportError:
-        pass
 
 
 async def async_setup_entry(
@@ -318,6 +314,17 @@ class FermaxCamera(FermaxBlueEntity, Camera):
             with contextlib.suppress(Exception):
                 await pc.close()
             send_message(WebRTCError(code="negotiation_failed", message=str(err)))
+            return
+
+        # Guard: close_webrtc_session() may have been called while ICE was
+        # gathering (e.g. browser closed the dashboard mid-setup).  If so the
+        # session is already gone from _pending_pcs and pc.close() is scheduled.
+        # Sending an answer or registering the PC would be wrong — abort cleanly.
+        if session_id not in self._pending_pcs:
+            _LOGGER.debug(
+                "WebRTC session %s closed during ICE gathering — discarding answer",
+                session_id,
+            )
             return
 
         # Move from pending → registered, then send answer
