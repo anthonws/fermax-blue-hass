@@ -195,24 +195,36 @@ class FermaxCamera(FermaxBlueEntity, Camera):
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         session = self.coordinator.stream_session
-        if not session or not session.is_active or session.video_relay is None:
-            # No active stream — auto-start camera preview and wait for relay
-            _LOGGER.info(
-                "WebRTC offer received but no active stream — auto-starting camera preview"
-            )
-            await self.coordinator.start_camera_preview()
+        relay_ready = session and session.is_active and session.video_relay is not None
 
-            # Wait up to 25 s for the mediasoup session + relay to be ready
+        if not relay_ready:
+            # Determine whether a stream is already being set up (doorbell in progress,
+            # another client already triggered auto-on, etc.).  Only fire start_camera_preview()
+            # if there is genuinely no session at all — otherwise we'd kill the live doorbell
+            # call or the in-progress auto-on that a concurrent client just started.
+            if self.coordinator.stream_session is None:
+                _LOGGER.info(
+                    "WebRTC offer received — no stream in progress, auto-starting preview"
+                )
+                await self.coordinator.start_camera_preview()
+            else:
+                _LOGGER.info(
+                    "WebRTC offer received — stream already in progress, waiting for relay"
+                )
+
+            # Wait up to 25 s for the relay to be ready regardless of who started it
+            # (covers: doorbell call in pickup phase, auto-on just triggered, concurrent clients)
             for _ in range(50):
                 await asyncio.sleep(0.5)
                 session = self.coordinator.stream_session
                 if session and session.is_active and session.video_relay is not None:
-                    _LOGGER.info("Stream ready — proceeding with WebRTC negotiation")
+                    _LOGGER.info(
+                        "Stream relay ready — proceeding with WebRTC session %s", session_id
+                    )
                     break
             else:
                 _LOGGER.warning(
-                    "Camera preview did not start in time for WebRTC session %s",
-                    session_id,
+                    "Stream relay not ready within 25 s for WebRTC session %s", session_id
                 )
                 send_message(
                     WebRTCError(
