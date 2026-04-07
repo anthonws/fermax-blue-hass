@@ -238,20 +238,34 @@ class FermaxCamera(FermaxBlueEntity, Camera):
             return
 
         # --- Step 2: Ensure an active stream with relay is available ---
+        # We deliberately do NOT auto-start a stream here.  The stream is
+        # started either by a doorbell ring (FCM → coordinator) or by the user
+        # pressing the Preview button (camera.turn_on).  If neither has happened
+        # the card just falls back to the last snapshot.  HA's frontend retries
+        # failed WebRTC sessions every few seconds, so the card will go live
+        # automatically once the stream is up — no page refresh needed.
         session = self.coordinator.stream_session
         relay_ready = session and session.is_active and session.video_relay is not None
 
         if not relay_ready:
             if self.coordinator.stream_session is None:
-                _LOGGER.info(
-                    "WebRTC offer received — no stream in progress, auto-starting preview"
+                # No stream at all — reject gracefully so the card shows the snapshot.
+                _LOGGER.debug(
+                    "WebRTC offer received — no active stream, rejecting (session %s)",
+                    session_id,
                 )
-                await self.coordinator.start_camera_preview()
-            else:
-                _LOGGER.info(
-                    "WebRTC offer received — stream already in progress, waiting for relay"
-                )
+                self._pending_pcs.pop(session_id, None)
+                with contextlib.suppress(Exception):
+                    await pc.close()
+                send_message(WebRTCError(code="no_stream", message="No active stream."))
+                return
 
+            # Stream is starting (triggered by ring or preview) but relay not
+            # ready yet — wait up to 25 s for the relay to become available.
+            _LOGGER.info(
+                "WebRTC offer received — stream starting, waiting for relay (session %s)",
+                session_id,
+            )
             for _ in range(50):
                 await asyncio.sleep(0.5)
                 session = self.coordinator.stream_session
@@ -269,8 +283,8 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                     await pc.close()
                 send_message(
                     WebRTCError(
-                        code="preview_timeout",
-                        message="Camera preview timed out. Try again.",
+                        code="stream_timeout",
+                        message="Stream did not become ready in time. Try again.",
                     )
                 )
                 return
