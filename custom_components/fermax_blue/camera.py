@@ -76,6 +76,10 @@ class FermaxCamera(FermaxBlueEntity, Camera):
         FermaxBlueEntity.__init__(self, coordinator)
         Camera.__init__(self)
         self._attr_unique_id = f"{self._device_id}_camera"
+        # PCs created during setup but not yet answered (keyed by session_id).
+        # Allows async_on_webrtc_candidate to buffer browser ICE candidates
+        # that arrive before we finish waiting for the mediasoup relay.
+        self._pending_pcs: dict[str, Any] = {}
 
     async def async_added_to_hass(self) -> None:
         """Register for doorbell ring events."""
@@ -194,14 +198,36 @@ class FermaxCamera(FermaxBlueEntity, Camera):
 
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
+        # --- Step 1: Create PC and set remote description immediately ---
+        # Doing this before waiting for the stream allows HA to route incoming
+        # browser ICE candidates to async_on_webrtc_candidate while we wait.
+        pc = RTCPeerConnection()
+        self._pending_pcs[session_id] = pc
+
+        @pc.on("track")
+        def on_track(track: Any) -> None:
+            if track.kind == "audio":
+                s = self.coordinator.stream_session
+                if s and s.is_active and hasattr(s, "_switchable_track") and s._switchable_track:
+                    _LOGGER.info("Browser mic track received — forwarding to intercom")
+                    s._switchable_track.set_source(_MicTrackSource(track))
+
+        try:
+            offer = RTCSessionDescription(sdp=offer_sdp, type="offer")
+            await pc.setRemoteDescription(offer)
+        except Exception as err:
+            _LOGGER.exception("Failed to set remote description for session %s", session_id)
+            self._pending_pcs.pop(session_id, None)
+            with contextlib.suppress(Exception):
+                await pc.close()
+            send_message(WebRTCError(code="negotiation_failed", message=str(err)))
+            return
+
+        # --- Step 2: Ensure an active stream with relay is available ---
         session = self.coordinator.stream_session
         relay_ready = session and session.is_active and session.video_relay is not None
 
         if not relay_ready:
-            # Determine whether a stream is already being set up (doorbell in progress,
-            # another client already triggered auto-on, etc.).  Only fire start_camera_preview()
-            # if there is genuinely no session at all — otherwise we'd kill the live doorbell
-            # call or the in-progress auto-on that a concurrent client just started.
             if self.coordinator.stream_session is None:
                 _LOGGER.info(
                     "WebRTC offer received — no stream in progress, auto-starting preview"
@@ -212,8 +238,6 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                     "WebRTC offer received — stream already in progress, waiting for relay"
                 )
 
-            # Wait up to 25 s for the relay to be ready regardless of who started it
-            # (covers: doorbell call in pickup phase, auto-on just triggered, concurrent clients)
             for _ in range(50):
                 await asyncio.sleep(0.5)
                 session = self.coordinator.stream_session
@@ -226,6 +250,9 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 _LOGGER.warning(
                     "Stream relay not ready within 25 s for WebRTC session %s", session_id
                 )
+                self._pending_pcs.pop(session_id, None)
+                with contextlib.suppress(Exception):
+                    await pc.close()
                 send_message(
                     WebRTCError(
                         code="preview_timeout",
@@ -234,9 +261,7 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 )
                 return
 
-        pc = RTCPeerConnection()
-
-        # Add intercom → browser tracks via relay
+        # --- Step 3: Add relay tracks and complete negotiation ---
         video_track = session.video_relay.create_consumer_track()
         pc.addTrack(video_track)
 
@@ -244,21 +269,9 @@ class FermaxCamera(FermaxBlueEntity, Camera):
             audio_track = session.audio_relay.create_consumer_track()
             pc.addTrack(audio_track)
 
-        # Receive browser mic → forward to intercom send transport
-        @pc.on("track")
-        def on_track(track: Any) -> None:
-            if track.kind == "audio" and session and session.is_active:
-                _LOGGER.info("Browser mic track received — forwarding to intercom")
-                if hasattr(session, "_switchable_track") and session._switchable_track:
-                    session._switchable_track.set_source(_MicTrackSource(track))
-
-        # SDP negotiation
         try:
-            offer = RTCSessionDescription(sdp=offer_sdp, type="offer")
-            await pc.setRemoteDescription(offer)
             answer = await pc.createAnswer()
 
-            # Wait for ICE gathering to complete before sending the answer
             gather_complete: asyncio.Event = asyncio.Event()
 
             @pc.on("icegatheringstatechange")
@@ -276,27 +289,73 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 )
         except Exception as err:
             _LOGGER.exception("WebRTC negotiation failed for session %s", session_id)
+            self._pending_pcs.pop(session_id, None)
             with contextlib.suppress(Exception):
                 await pc.close()
-            send_message(
-                WebRTCError(
-                    code="negotiation_failed",
-                    message=str(err),
-                )
-            )
+            send_message(WebRTCError(code="negotiation_failed", message=str(err)))
             return
 
-        # Register PC with coordinator for lifecycle cleanup
+        # Move from pending → registered, then send answer
+        self._pending_pcs.pop(session_id, None)
         self.coordinator.register_webrtc_peer(session_id, pc)
-
-        # Send SDP answer to browser
         send_message(WebRTCAnswer(answer=pc.localDescription.sdp))
         _LOGGER.info("WebRTC answer sent for session %s", session_id)
+
+    async def async_on_webrtc_candidate(self, session_id: str, candidate: Any) -> None:
+        """Handle a browser ICE candidate (trickle ICE).
+
+        Called by HA's WebSocket layer for each candidate the browser sends
+        after the offer.  We look up the RTCPeerConnection — which may still
+        be in the pending dict while we wait for the mediasoup relay — and
+        add the candidate so ICE negotiation can proceed in parallel.
+        """
+        pc = self._pending_pcs.get(session_id) or self.coordinator._webrtc_peers.get(session_id)
+        if pc is None:
+            return
+        try:
+            if candidate is None:
+                return  # end-of-candidates signal — nothing to do
+            from aiortc.sdp import candidate_from_sdp
+
+            # HA may pass a dataclass, dict, or bare string
+            if hasattr(candidate, "candidate"):
+                candidate_str = candidate.candidate
+                sdp_mid = getattr(candidate, "sdpMid", None)
+                sdp_mline_index = getattr(candidate, "sdpMLineIndex", None)
+            elif isinstance(candidate, dict):
+                candidate_str = candidate.get("candidate", "")
+                sdp_mid = candidate.get("sdpMid")
+                sdp_mline_index = candidate.get("sdpMLineIndex")
+            else:
+                candidate_str = str(candidate)
+                sdp_mid = None
+                sdp_mline_index = None
+
+            if not candidate_str or not candidate_str.strip():
+                return
+
+            # Strip the "candidate:" prefix that browsers include
+            sdp_part = candidate_str
+            if sdp_part.startswith("candidate:"):
+                sdp_part = sdp_part[len("candidate:"):]
+
+            ice = candidate_from_sdp(sdp_part)
+            ice.sdpMid = sdp_mid
+            ice.sdpMLineIndex = sdp_mline_index
+            await pc.addIceCandidate(ice)
+        except Exception:
+            _LOGGER.debug(
+                "Failed to add ICE candidate for session %s", session_id, exc_info=True
+            )
 
     @callback
     def close_webrtc_session(self, session_id: str) -> None:
         """Called by HA when the browser closes a WebRTC session."""
         _LOGGER.debug("Closing WebRTC session %s", session_id)
+        # Clean up a pending PC that never completed negotiation
+        pc = self._pending_pcs.pop(session_id, None)
+        if pc:
+            asyncio.ensure_future(pc.close())
         self.coordinator.close_webrtc_peer(session_id)
 
     @property
