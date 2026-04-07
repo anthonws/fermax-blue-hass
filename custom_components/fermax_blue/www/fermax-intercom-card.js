@@ -31,7 +31,7 @@
  *   show_controls: false   (default true — hide mic/hangup in live view)
  */
 
-const CARD_VERSION = '1.0.0';
+const CARD_VERSION = '1.0.1';
 
 // ── Retry / timing constants ─────────────────────────────────────────────────
 const NO_STREAM_RETRY_MS   = 3000;  // Poll interval when no stream is running
@@ -75,8 +75,9 @@ class FermaxIntercardCard extends HTMLElement {
     this._connectingTimer = null;
 
     // Mic
-    this._micStream = null;   // MediaStream from getUserMedia
-    this._micMuted  = false;
+    this._micStream   = null;   // MediaStream from getUserMedia
+    this._micMuted    = false;
+    this._micDenied   = false;  // true after getUserMedia was denied
 
     // Change-detection for snapshot URL
     this._lastEntityPicture = null;
@@ -261,8 +262,14 @@ class FermaxIntercardCard extends HTMLElement {
         }
         .btn:active { transform: scale(0.91); }
 
-        .mic-btn  { background: rgba(255,255,255,0.88); }
-        .mic-btn.muted { background: rgba(215, 45, 45, 0.88); }
+        /* mic states:
+             default  = white  = active, unmuted
+             .muted   = red    = active, muted by user
+             .no-mic  = grey   = permission denied / unavailable  */
+        .mic-btn          { background: rgba(255,255,255,0.88); }
+        .mic-btn.muted    { background: rgba(215,  45,  45, 0.88); }
+        .mic-btn.no-mic   { background: rgba(120, 120, 120, 0.60); cursor: not-allowed; }
+        .mic-btn.flash    { background: rgba(215,  45,  45, 0.88); }
         .hangup-btn { background: rgba(215, 30, 30, 0.92); }
       </style>
 
@@ -326,6 +333,8 @@ class FermaxIntercardCard extends HTMLElement {
       cls(overlay,   'visible', false);
       cls(liveBadge, 'visible', true);
       cls(controls,  'visible', true);
+      // Sync mic button to reflect actual permission state now that controls are visible
+      this._updateMicButton();
     }
   }
 
@@ -353,8 +362,11 @@ class FermaxIntercardCard extends HTMLElement {
           audio: true,
           video: false,
         });
-      } catch (_) {
-        // Mic not available or permission denied — continue without mic
+        this._micDenied = false;
+      } catch (err) {
+        // Mic not available or permission denied — video+audio receive only
+        this._micDenied = true;
+        console.info('[fermax-intercom-card] Mic unavailable:', err.name, err.message);
       }
 
       // ── 2. Create RTCPeerConnection ───────────────────────────────────────
@@ -525,16 +537,69 @@ class FermaxIntercardCard extends HTMLElement {
 
   // ── Controls ─────────────────────────────────────────────────────────────────
 
-  _toggleMic() {
-    if (!this._micStream) return;
+  async _toggleMic() {
+    if (!this._micStream) {
+      // No mic yet — try to acquire it on-demand (user may have just granted
+      // permission in the browser settings after the call started).
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        this._micStream = stream;
+        this._micDenied = false;
+
+        // Wire the newly-acquired track into the existing PC sender.
+        // Only works if the PC was set up with sendrecv (i.e. a sender exists).
+        // If the PC has only a recvonly transceiver we can't add a track
+        // without renegotiation — the mic will take effect on the next call.
+        if (this._pc) {
+          const sender = this._pc.getSenders().find(s => s.track?.kind === 'audio');
+          if (sender) {
+            await sender.replaceTrack(stream.getAudioTracks()[0]);
+          }
+        }
+      } catch (err) {
+        // Still denied — flash the button red to give visible feedback
+        this._micDenied = true;
+        console.warn('[fermax-intercom-card] Mic permission denied:', err.name);
+        this._flashMicDenied();
+        return;
+      }
+    }
+
     this._micMuted = !this._micMuted;
-    this._micStream.getAudioTracks().forEach(t => {
-      t.enabled = !this._micMuted;
-    });
-    const btn = this.shadowRoot.getElementById('mic-btn');
-    if (btn) {
-      btn.classList.toggle('muted', this._micMuted);
-      btn.textContent = this._micMuted ? '🔇' : '🎤';
+    this._micStream.getAudioTracks().forEach(t => { t.enabled = !this._micMuted; });
+    this._updateMicButton();
+  }
+
+  /** Flash the mic button red briefly to indicate permission was denied. */
+  _flashMicDenied() {
+    const btn = this.shadowRoot?.getElementById('mic-btn');
+    if (!btn) return;
+    btn.classList.add('flash');
+    btn.textContent = '🚫';
+    setTimeout(() => {
+      btn.classList.remove('flash');
+      this._updateMicButton();
+    }, 900);
+  }
+
+  /** Sync mic button appearance to current state. */
+  _updateMicButton() {
+    const btn = this.shadowRoot?.getElementById('mic-btn');
+    if (!btn) return;
+
+    btn.classList.remove('muted', 'no-mic', 'flash');
+
+    if (!this._micStream || this._micDenied) {
+      btn.classList.add('no-mic');
+      btn.textContent = '🎤';
+      btn.title = 'Microphone unavailable — check browser permissions';
+    } else if (this._micMuted) {
+      btn.classList.add('muted');
+      btn.textContent = '🔇';
+      btn.title = 'Microphone muted — click to unmute';
+    } else {
+      btn.textContent = '🎤';
+      btn.title = 'Microphone active — click to mute';
     }
   }
 
@@ -574,12 +639,8 @@ class FermaxIntercardCard extends HTMLElement {
     this._pendingCandidates = [];
     this._micMuted          = false;
 
-    // Reset mic button appearance
-    const btn = this.shadowRoot?.getElementById('mic-btn');
-    if (btn) {
-      btn.classList.remove('muted');
-      btn.textContent = '🎤';
-    }
+    // Sync mic button to post-cleanup state
+    this._updateMicButton();
   }
 }
 
