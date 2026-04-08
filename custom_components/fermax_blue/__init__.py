@@ -46,23 +46,38 @@ _WWW_URL  = "/local/fermax_blue"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register static frontend resources (Lovelace card JS).
+    """One-time setup: disable aioice mDNS and register static frontend resources.
 
     Called once per HA startup regardless of how many config entries exist.
-    The card file is served at /local/fermax_blue/fermax-intercom-card.js.
-    Users need to add that URL as a Lovelace resource (once, manually):
-      Settings → Dashboards → ⋮ → Resources → + → JavaScript Module →
-      /local/fermax_blue/fermax-intercom-card.js
     """
+    # ── Disable mDNS in aioice ────────────────────────────────────────────────
+    # aioice reads USE_ICE_MDNS once at import time, so setting the env var in
+    # camera.py is too late if another component already imported aioice first.
+    # Patching the live module variable is the only reliable approach — it works
+    # regardless of import order.  Without this, aioice binds a multicast socket
+    # and calls dnspython's import_module() from datagram_received callbacks on
+    # the HA event loop, which the loop-guardian flags as blocking I/O for every
+    # new DNS record type it encounters (A, AAAA, PTR, …).
+    try:
+        import aioice.ice  # noqa: PLC0415
+        aioice.ice.USE_ICE_MDNS = False
+        _LOGGER.debug("aioice mDNS disabled")
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Could not disable aioice mDNS (aioice not installed yet)")
+
+    # ── Register Lovelace card JS ─────────────────────────────────────────────
+    # The card file is served at /local/fermax_blue/fermax-intercom-card.js.
+    # Users need to add that URL as a Lovelace resource once:
+    #   Settings → Dashboards → ⋮ → Resources → + → JavaScript Module
     try:
         await hass.http.async_register_static_paths([
             StaticPathConfig(_WWW_URL, str(_WWW_DIR), cache_headers=False),
         ])
         _LOGGER.debug("Registered Fermax Blue frontend resources at %s", _WWW_URL)
-    except Exception:
-        # Path may already be registered if integration was reloaded;
-        # not fatal — the files are still served from the first registration.
+    except Exception:  # noqa: BLE001
+        # Path may already be registered if integration was reloaded.
         _LOGGER.debug("Fermax Blue frontend resources already registered")
+
     return True
 
 

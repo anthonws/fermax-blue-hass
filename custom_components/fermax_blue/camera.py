@@ -5,20 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 from typing import Any
 
-# Disable mDNS ICE candidate gathering in aioice (used by aiortc).
-# aioice reads USE_ICE_MDNS at import time so this must be set before the first
-# `import aiortc` / `import aioice` anywhere in the process.  Integration
-# modules are loaded in the executor at HA startup, well before any WebRTC
-# offer triggers the lazy aiortc import, so setting it here is sufficient.
-# Without this, aioice binds a multicast socket and calls dnspython's
-# import_module() inside datagram_received callbacks — on the event loop —
-# which HA's loop-guardian flags as blocking I/O for every new DNS record type
-# it encounters (A, AAAA, PTR, SRV, …).  mDNS candidates aren't needed for
-# same-LAN browser↔HA connectivity; host/STUN candidates are sufficient.
-os.environ.setdefault("USE_ICE_MDNS", "0")
+# Note: mDNS is disabled in aioice via __init__.async_setup() which patches
+# aioice.ice.USE_ICE_MDNS = False at startup — more reliable than the env var
+# approach since it works regardless of when aioice was first imported.
 
 from aiohttp import web
 from homeassistant.components.camera import Camera, CameraEntityFeature
