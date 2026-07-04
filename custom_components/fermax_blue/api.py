@@ -233,7 +233,9 @@ class FermaxBlueApi:
         }
 
         client = await self._get_client()
-        response = await client.post(self._auth_url, headers=headers, content=payload)
+        response = await client.post(
+            self._auth_url, headers=headers, content=payload, timeout=API_TIMEOUT
+        )
 
         content_type = response.headers.get("content-type", "unknown")
         try:
@@ -310,6 +312,7 @@ class FermaxBlueApi:
         client = await self._get_client()
         url = f"{self._base_url}{path}"
         headers = self._get_auth_headers()
+        kwargs.setdefault("timeout", API_TIMEOUT)
         last_exc: Exception | None = None
 
         for attempt in range(MAX_RETRIES + 1):
@@ -444,13 +447,19 @@ class FermaxBlueApi:
 
         entries = []
         for item in response.json():
+            raw_date = item.get("callDate")
+            try:
+                call_date = (
+                    datetime.fromisoformat(raw_date) if raw_date else datetime.now(UTC)
+                )
+            except (ValueError, TypeError):
+                _LOGGER.debug("Skipping call log entry with invalid callDate: %r", raw_date)
+                continue
             entries.append(
                 CallLogEntry(
                     call_id=item.get("id", ""),
                     device_id=item.get("deviceId", ""),
-                    call_date=datetime.fromisoformat(
-                        item.get("callDate", datetime.now(UTC).isoformat())
-                    ),
+                    call_date=call_date,
                     photo_id=item.get("photoId"),
                     answered=item.get("answered", False),
                 )

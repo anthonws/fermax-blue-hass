@@ -74,9 +74,18 @@ CAMERA_TIMEOUT_SECONDS = 90
 
 
 def _is_trusted_signaling_url(url: str) -> bool:
-    """Reject signaling URLs outside known Fermax domains."""
+    """Reject signaling URLs that aren't a TLS scheme on a Fermax domain.
+
+    The SocketUrl comes from an FCM push, so treat it as untrusted input:
+    require no surrounding whitespace, an https/wss scheme, and a *.fermax.io
+    host (the only party that controls that domain).
+    """
     try:
+        if url != url.strip():
+            return False
         parsed = urlparse(url)
+        if parsed.scheme.lower() not in ("https", "wss"):
+            return False
         host = (parsed.hostname or "").lower()
         return host.endswith(ALLOWED_SIGNALING_DOMAIN) or host == "fermax.io"
     except ValueError:
@@ -126,6 +135,10 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._stream_stop_unsub: CALLBACK_TYPE | None = None
         self._processed_notifications: deque[str] = deque(maxlen=100)
         self._notification_start_time: float | None = None
+        # Time-based grace only used on the very first run (no persisted IDs yet);
+        # afterwards re-deliveries are recognised by persisted persistent_id.
+        self._grace_active = False
+        self._stream_lock = asyncio.Lock()  # serialises _start_stream/stop_stream
         self._webrtc_peers: dict[str, Any] = {}  # session_id -> RTCPeerConnection
 
     @property
@@ -181,6 +194,48 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """Watchdog hook: revive the FCM listener if it died."""
         if self.notification_listener:
             await self.notification_listener.ensure_running()
+
+    def _processed_ids_path(self) -> Path | None:
+        """Path for persisting processed notification IDs across restarts."""
+        if self._storage_path:
+            return self._storage_path / f"processed_ids_{self.pairing.device_id}.json"
+        return None
+
+    async def _load_processed_ids(self) -> int:
+        """Load persisted processed notification IDs. Returns how many loaded."""
+        path = self._processed_ids_path()
+        if not path:
+            return 0
+
+        def _read() -> list[str]:
+            if not path.exists():
+                return []
+            try:
+                import json
+
+                data = json.loads(path.read_text())
+                return [str(x) for x in data] if isinstance(data, list) else []
+            except (OSError, ValueError):
+                return []
+
+        ids = await asyncio.to_thread(_read)
+        self._processed_notifications.extend(ids)
+        return len(ids)
+
+    async def _save_processed_ids(self) -> None:
+        """Persist processed notification IDs (best-effort)."""
+        path = self._processed_ids_path()
+        if not path:
+            return
+        ids = list(self._processed_notifications)
+
+        def _write() -> None:
+            import json
+
+            with contextlib.suppress(OSError):
+                path.write_text(json.dumps(ids))
+
+        await asyncio.to_thread(_write)
 
     async def _load_last_photo(self) -> None:
         """Load persisted last photo from disk."""
@@ -316,10 +371,17 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             firebase_package_name=str(
                 self._firebase_config.get("firebase_package_name", "")
             ),
+            token_updated_callback=self._on_fcm_token_rotated,
         )
 
         # Load persisted last photo for camera preview
         await self._load_last_photo()
+
+        # Load persisted processed-notification IDs so re-deliveries after a
+        # restart are recognised by ID (audit #9). The blunt time-based grace is
+        # only used on the very first run, before any IDs have been persisted.
+        loaded = await self._load_processed_ids()
+        self._grace_active = loaded == 0
 
         fcm_token = await self.notification_listener.register()
         if fcm_token:
@@ -330,6 +392,16 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 "Notification listener started for device %s",
                 self.pairing.device_id,
             )
+
+    async def _on_fcm_token_rotated(self, new_token: str) -> None:
+        """Re-register a rotated FCM token with Fermax (audit #1).
+
+        Without this, Fermax keeps pushing to the old (dead) token after a
+        rotation and the doorbell silently stops working.
+        """
+        _LOGGER.info("Re-registering rotated FCM token with Fermax")
+        with contextlib.suppress(Exception):
+            await self.api.register_app_token(new_token, active=True)
 
     async def stop_notifications(self) -> None:
         """Stop the notification listener."""
@@ -343,24 +415,30 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
     @callback
     def _handle_notification(self, notification: dict, persistent_id: str) -> None:
         """Handle an incoming FCM doorbell notification."""
-        # Skip already-processed notifications (re-delivered on FCM reconnect)
+        # Skip already-processed notifications — recognised by persistent_id
+        # across restarts thanks to the persisted ID set (audit #9). This is the
+        # primary defence against phantom rings from FCM re-delivery.
         if persistent_id in self._processed_notifications:
             _LOGGER.debug("Skipping duplicate notification: %s", persistent_id)
             return
 
-        # After a reload/restart, FCM re-delivers recent notifications.
-        # Ignore them during the grace period to avoid phantom doorbell rings.
+        # First-run fallback only: with no persisted IDs yet, a blunt time-based
+        # grace guards against a re-delivered backlog phantom-ringing on the very
+        # first startup. Once IDs are persisted, ID dedup handles re-delivery and
+        # a genuine ring right after restart is no longer dropped.
         if (
-            self._notification_start_time is not None
+            self._grace_active
+            and self._notification_start_time is not None
             and time.monotonic() - self._notification_start_time < NOTIFICATION_GRACE_PERIOD
         ):
             _LOGGER.debug(
-                "Ignoring re-delivered notification during grace period: %s",
+                "Ignoring notification during first-run grace period: %s",
                 persistent_id,
             )
             return
 
         self._processed_notifications.append(persistent_id)
+        self.hass.async_create_task(self._save_processed_ids())
 
         _LOGGER.info(
             "Doorbell notification for %s: %s",
@@ -445,8 +523,10 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """Open a specific door. Uses in-call endpoint if stream is active."""
         success = False
 
-        # If there's an active stream, use the in-call endpoint
-        if self._stream_session and self._stream_session.is_active:
+        # Capture the session once to avoid a TOCTOU: a concurrent stop_stream /
+        # auto-stop / on-end could null it between the check and use (audit G6).
+        session = self._stream_session
+        if session and session.is_active:
             fcm_token = (
                 self.notification_listener.fcm_token
                 if self.notification_listener
@@ -454,7 +534,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             )
             success = await self.api.open_door_incall(
                 device_id=self.pairing.device_id,
-                room_id=self._stream_session._room_id,
+                room_id=session.room_id,
                 fcm_token=fcm_token,
                 call_as=self.pairing.device_id,
             )
@@ -564,62 +644,119 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """Start a video stream session for the given room."""
         if not _pymediasoup_available():
             return
-        await self.stop_stream()
 
-        if not self.notification_listener:
-            return
-        fcm_token = self.notification_listener.fcm_token
-        if not fcm_token:
-            return
-        oauth_token = fermax_token or await self.api.get_access_token()
+        # Serialise start/stop so overlapping notifications (e.g. Autoon then
+        # Call) can't race and orphan a half-started session (audit #11).
+        async with self._stream_lock:
+            await self._stop_stream_locked()
 
-        # Resolve recordings directory via HA media_dirs for portability (M-5)
-        media_root = self.hass.config.media_dirs.get("local", "/media")
-        recordings_dir = str(Path(media_root) / RECORDINGS_DIR)
+            if not self.notification_listener:
+                return
+            fcm_token = self.notification_listener.fcm_token
+            if not fcm_token:
+                return
+            try:
+                oauth_token = fermax_token or await self.api.get_access_token()
+            except Exception:
+                _LOGGER.warning("Cannot start stream: failed to get access token", exc_info=True)
+                return
+
+            # Resolve recordings directory via HA media_dirs for portability (M-5)
+            media_root = self.hass.config.media_dirs.get("local", "/media")
+            recordings_dir = str(Path(media_root) / RECORDINGS_DIR)
+
+            session = FermaxStreamSession(
+                signaling_url=signaling_url,
+                oauth_token=oauth_token,
+                fcm_token=fcm_token,
+                room_id=room_id,
+                on_end=None,
+                recordings_dir=recordings_dir,
+                record=record,
+            )
+
+            @callback
+            def _on_stream_end() -> None:
+                # Identity guard: ignore if a newer session has superseded us,
+                # otherwise the old grabber's finally-callback could clobber the
+                # new session's state (audit #26).
+                if self._stream_session is not session:
+                    return
+                if session.latest_frame:
+                    self._last_photo = session.latest_frame
+                    self.hass.async_create_task(self._save_last_photo())
+                self._stream_session = None
+                self._camera_active = False
+                if self._stream_stop_unsub:
+                    self._stream_stop_unsub()
+                    self._stream_stop_unsub = None
+                # Fully tear down the session's relays / socket.io / tasks when
+                # the track ends on its own (stop() is idempotent) (audit #45).
+                self.hass.async_create_task(session.stop())
+                self.async_set_updated_data(self.data)
+
+            session._on_end = _on_stream_end
+            self._stream_session = session
+
+            success = await session.start()
+
+            # If a concurrent call superseded us while we were starting, drop
+            # our now-orphaned session instead of leaking it.
+            if self._stream_session is not session:
+                await session.stop()
+                return
+
+            if success:
+                self._camera_active = True
+                _LOGGER.info("Video stream started for room %s", room_id)
+                async_dispatcher_send(
+                    self.hass, SIGNAL_CAMERA_ON.format(self.pairing.device_id)
+                )
+                self._arm_auto_stop()
+            else:
+                _LOGGER.warning("Failed to start video stream for room %s", room_id)
+                self._stream_session = None
+
+    def _arm_auto_stop(self) -> None:
+        """(Re)arm the unattended-stream auto-stop timer."""
+        if self._stream_stop_unsub:
+            self._stream_stop_unsub()
+            self._stream_stop_unsub = None
 
         @callback
-        def _on_stream_end() -> None:
-            # Save last frame as photo preview before releasing the session
-            if self._stream_session and self._stream_session.latest_frame:
-                self._last_photo = self._stream_session.latest_frame
-                self.hass.async_create_task(self._save_last_photo())
-            self._stream_session = None
-            self._camera_active = False
-            self.async_set_updated_data(self.data)
+        def _auto_stop_stream(_now: Any) -> None:
+            self._stream_stop_unsub = None
+            # Don't cut off a call someone is actively watching via the card;
+            # only auto-stop unattended previews (audit G3).
+            if self._webrtc_peers:
+                _LOGGER.debug("Auto-stop deferred — %d active viewer(s)", len(self._webrtc_peers))
+                self._arm_auto_stop()
+                return
+            _LOGGER.info("Stream auto-stop after %ds (no active viewers)", self._stream_duration)
+            self.hass.async_create_task(self.stop_stream())
 
-        self._stream_session = FermaxStreamSession(
-            signaling_url=signaling_url,
-            oauth_token=oauth_token,
-            fcm_token=fcm_token,
-            room_id=room_id,
-            on_end=_on_stream_end,
-            recordings_dir=recordings_dir,
-            record=record,
+        self._stream_stop_unsub = async_call_later(
+            self.hass, self._stream_duration, _auto_stop_stream
         )
-
-        success = await self._stream_session.start()
-        if success:
-            self._camera_active = True
-            _LOGGER.info("Video stream started for room %s", room_id)
-            async_dispatcher_send(self.hass, SIGNAL_CAMERA_ON.format(self.pairing.device_id))
-
-            # Schedule auto-stop after configured duration
-            if self._stream_stop_unsub:
-                self._stream_stop_unsub()
-            @callback
-            def _auto_stop_stream(_now: Any) -> None:
-                _LOGGER.info("Stream auto-stop after %ds", self._stream_duration)
-                self._stream_stop_unsub = None
-                self.hass.async_create_task(self.stop_stream())
-            self._stream_stop_unsub = async_call_later(
-                self.hass, self._stream_duration, _auto_stop_stream
-            )
-        else:
-            _LOGGER.warning("Failed to start video stream for room %s", room_id)
-            self._stream_session = None
 
     async def _auto_respond(self) -> None:
         """Send auto-response audio after stream starts."""
+        audio_file = self._auto_response_file
+        if not audio_file:
+            return
+
+        # Confirm the configured file exists and is a regular file before handing
+        # it to av.open(), so a stale/garbage path fails cleanly (audit #38).
+        def _is_valid_file() -> bool:
+            try:
+                return Path(audio_file).is_file()
+            except (OSError, ValueError):
+                return False
+
+        if not await asyncio.to_thread(_is_valid_file):
+            _LOGGER.error("Auto-response file is missing or invalid: %s", audio_file)
+            return
+
         # Wait for stream to be ready
         for _ in range(20):
             if self._stream_session and self._stream_session.is_active:
@@ -627,8 +764,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             await asyncio.sleep(0.5)
         if self._stream_session and self._stream_session.is_active:
             await asyncio.sleep(1)  # Extra delay for audio transport
-            await self._stream_session.send_audio(self._auto_response_file)
-            _LOGGER.info("Auto-response sent: %s", self._auto_response_file)
+            await self._stream_session.send_audio(audio_file)
+            _LOGGER.info("Auto-response sent: %s", audio_file)
 
     def register_webrtc_peer(self, session_id: str, pc: Any) -> None:
         """Register a WebRTC RTCPeerConnection for lifecycle management."""
@@ -658,6 +795,11 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
     async def stop_stream(self) -> None:
         """Stop the current video stream session and all WebRTC peer connections."""
+        async with self._stream_lock:
+            await self._stop_stream_locked()
+
+    async def _stop_stream_locked(self) -> None:
+        """Stop the stream; caller must already hold self._stream_lock."""
         if self._stream_stop_unsub:
             self._stream_stop_unsub()
             self._stream_stop_unsub = None

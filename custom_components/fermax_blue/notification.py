@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -35,6 +36,13 @@ FCM_RESTART_BACKOFF_MAX = 900.0  # ceiling for the doubled delay
 FCM_EXC_LOG_LIMIT = 3  # full tracebacks allowed per window
 FCM_EXC_LOG_WINDOW = 300.0  # seconds
 
+# After this many consecutive decrypt failures, escalate from WARNING to ERROR:
+# it's a systemic failure (bad creds / key change), not one poisoned message.
+FCM_DECRYPT_ESCALATE_AFTER = 5
+# Single-element list = mutable module-level counter usable from the static
+# monkey-patched decrypt function.
+_DECRYPT_FAILURES = [0]
+
 
 class _FcmExcInfoRateLimitFilter(logging.Filter):
     """Strip tracebacks from upstream FCM records after a burst.
@@ -54,6 +62,9 @@ class _FcmExcInfoRateLimitFilter(logging.Filter):
         self._limit = limit
         self._window = window
         self._timestamps: deque[float] = deque()
+        # logging handlers can emit from multiple threads; guard the deque and
+        # the record mutation so concurrent emits can't corrupt state (audit #44)
+        self._lock = threading.Lock()
 
     def filter(self, record: logging.LogRecord) -> bool:
         # exc_info=True outside an except block yields the truthy (None, None,
@@ -61,13 +72,14 @@ class _FcmExcInfoRateLimitFilter(logging.Filter):
         if not record.exc_info or record.exc_info[0] is None:
             return True
 
-        now = time.monotonic()
-        while self._timestamps and now - self._timestamps[0] > self._window:
-            self._timestamps.popleft()
+        with self._lock:
+            now = time.monotonic()
+            while self._timestamps and now - self._timestamps[0] > self._window:
+                self._timestamps.popleft()
 
-        if len(self._timestamps) < self._limit:
-            self._timestamps.append(now)
-            return True
+            if len(self._timestamps) < self._limit:
+                self._timestamps.append(now)
+                return True
 
         record.exc_info = None
         record.exc_text = None
@@ -121,15 +133,33 @@ def _patch_fcm_decrypt() -> None:
         raw_data: bytes,
     ) -> bytes:
         try:
-            return original(credentials, _b64_pad(crypto_key_str), _b64_pad(salt_str), raw_data)
+            result = original(
+                credentials, _b64_pad(crypto_key_str), _b64_pad(salt_str), raw_data
+            )
+            _DECRYPT_FAILURES[0] = 0  # any success clears the streak
+            return result
         except Exception:
             # Returning b"" lets the upstream handler ack and skip this single
             # message (breaking the redelivery loop) instead of letting the
             # exception tear the whole client down.
-            _LOGGER.warning(
-                "Skipping an undecryptable FCM push; FCM listener kept alive",
-                exc_info=True,
-            )
+            _DECRYPT_FAILURES[0] += 1
+            if _DECRYPT_FAILURES[0] >= FCM_DECRYPT_ESCALATE_AFTER:
+                # Every push is failing to decrypt — this is no longer a single
+                # poisoned message but a systemic failure (wrong creds, key/algo
+                # change). Escalate loudly so it's visible; the doorbell is
+                # effectively down (audit #10).
+                _LOGGER.error(
+                    "FCM decrypt has failed for %d consecutive pushes — doorbell "
+                    "notifications are likely DOWN. Consider removing and re-adding "
+                    "the integration to force a fresh FCM registration.",
+                    _DECRYPT_FAILURES[0],
+                    exc_info=True,
+                )
+            else:
+                _LOGGER.warning(
+                    "Skipping an undecryptable FCM push; FCM listener kept alive",
+                    exc_info=True,
+                )
             return b""
 
     _decrypt_raw_data_safe._fermax_decrypt_patched = True  # type: ignore[attr-defined]
@@ -143,16 +173,27 @@ _SENSITIVE_LOG_KEYS = frozenset(
 )
 
 
+def _redact_value(value: Any) -> Any:
+    """Recursively redact a value that may be a dict, list, or scalar."""
+    if isinstance(value, dict):
+        return _redact_notification(value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
 def _redact_notification(data: dict[str, Any]) -> dict[str, Any]:
-    """Return a deep copy of *data* with sensitive values replaced by '***'."""
+    """Return a deep copy of *data* with sensitive values replaced by '***'.
+
+    Recurses into nested dicts AND lists so tokens buried in list values are
+    not leaked to logs (audit #34).
+    """
     result: dict[str, Any] = {}
     for k, v in data.items():
         if k in _SENSITIVE_LOG_KEYS:
             result[k] = "***"
-        elif isinstance(v, dict):
-            result[k] = _redact_notification(v)
         else:
-            result[k] = v
+            result[k] = _redact_value(v)
     return result
 
 
@@ -169,9 +210,14 @@ class FermaxNotificationListener:
         firebase_app_id: str,
         firebase_project_id: str,
         firebase_package_name: str,
+        token_updated_callback: Callable[[str], Any] | None = None,
     ) -> None:
         self._hass = hass
         self._notification_callback = notification_callback
+        # Called (with the new token) when FCM rotates the registration token,
+        # so the coordinator can re-register it with Fermax (audit #1).
+        self._token_updated_callback = token_updated_callback
+        self._last_token: str | None = None
         self._credentials: dict | None = None
         self._push_client: FcmPushClient | None = None
         self._fcm_config = FcmRegisterConfig(
@@ -204,13 +250,34 @@ class FermaxNotificationListener:
         """Handle FCM credentials update (sync callback from firebase_messaging).
 
         Schedules an async save via the HA event loop so we never perform
-        blocking I/O inside a sync callback.
+        blocking I/O inside a sync callback. If the registration token itself
+        rotated, also re-register it with Fermax — otherwise the cloud keeps
+        pushing to the dead token and the doorbell silently dies (audit #1).
         """
         self._credentials = new_creds
         self._hass.loop.call_soon_threadsafe(
             self._hass.async_create_task,
-            self._save_credentials(),
+            self._persist_and_propagate_credentials(),
         )
+
+    async def _persist_and_propagate_credentials(self) -> None:
+        """Save rotated credentials and re-register the token with Fermax."""
+        try:
+            await self._save_credentials()
+        except Exception:
+            _LOGGER.exception("Failed to persist rotated FCM credentials")
+
+        new_token = self.fcm_token
+        if new_token and new_token != self._last_token:
+            _LOGGER.info("FCM registration token rotated — re-registering with Fermax")
+            self._last_token = new_token
+            if self._token_updated_callback is not None:
+                try:
+                    result = self._token_updated_callback(new_token)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    _LOGGER.exception("Failed to propagate rotated FCM token to Fermax")
 
     async def _save_credentials(self) -> None:
         """Persist FCM credentials via HA Store (non-blocking, within .storage/)."""
@@ -246,6 +313,9 @@ class FermaxNotificationListener:
             await self._save_credentials()
             _LOGGER.info("FCM registration complete")
 
+        # Remember the token the coordinator registers with Fermax so a later
+        # rotation is detected as a change (audit #1).
+        self._last_token = self.fcm_token
         return self.fcm_token
 
     async def start(self) -> None:

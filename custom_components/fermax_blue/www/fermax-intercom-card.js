@@ -1,5 +1,5 @@
 /**
- * Fermax Intercom Card  v1.0.0
+ * Fermax Intercom Card  v1.1.1
  *
  * Custom Lovelace card for the Fermax Blue integration.
  *
@@ -31,7 +31,7 @@
  *   show_controls: false   (default true — hide mic/hangup in live view)
  */
 
-const CARD_VERSION = '1.0.1';
+const CARD_VERSION = '1.1.1';
 
 // ── Retry / timing constants ─────────────────────────────────────────────────
 const NO_STREAM_RETRY_MS   = 3000;  // Poll interval when no stream is running
@@ -69,6 +69,11 @@ class FermaxIntercardCard extends HTMLElement {
     this._sessionId         = null;   // HA WebRTC session id
     this._pendingCandidates = [];     // Client ICE candidates buffered before
                                       // session_id arrives
+    this._connecting        = false;  // Synchronous in-flight re-entrancy lock
+    this._connectEpoch      = 0;      // Generation counter — bumped on cleanup
+                                      // to invalidate any in-flight _connect()
+    this._userHungUp        = false;  // true after an explicit user hangup —
+                                      // suppresses auto-reconnect until re-open
 
     // Timers
     this._retryTimer      = null;
@@ -121,6 +126,9 @@ class FermaxIntercardCard extends HTMLElement {
         entity.attributes.entity_picture !==
           prevHass.states[this._config.entity]?.attributes.entity_picture
       ) {
+        // A fresh doorbell ring (new snapshot) is a new event — clear any
+        // prior user hangup so the card connects again.
+        this._userHungUp = false;
         this._scheduleRetry(ENTITY_CHANGE_RETRY);
       }
     }
@@ -132,6 +140,9 @@ class FermaxIntercardCard extends HTMLElement {
   }
 
   connectedCallback() {
+    // Re-attaching the card (user re-opening the view) is an explicit re-open —
+    // clear any prior user hangup so polling/connecting resumes.
+    this._userHungUp = false;
     if (this._hass && this._state === 'idle' && !this._retryTimer) {
       this._scheduleRetry(0);
     }
@@ -143,8 +154,22 @@ class FermaxIntercardCard extends HTMLElement {
 
   // ── Rendering ────────────────────────────────────────────────────────────────
 
+  /**
+   * Validate the author-controlled aspect_ratio config value before it is
+   * interpolated into a <style> block. Accepts only ratio forms like "16/9",
+   * "4/3", "1.777", or percentages like "75%". Anything else falls back to the
+   * default "4/3" to prevent CSS injection.
+   */
+  _sanitizeAspectRatio(value) {
+    const DEFAULT = '4/3';
+    if (typeof value !== 'string') return DEFAULT;
+    const trimmed = value.trim();
+    const RATIO_RE = /^\d+(\.\d+)?(\s*\/\s*\d+(\.\d+)?)?$|^\d+(\.\d+)?%$/;
+    return RATIO_RE.test(trimmed) ? trimmed : DEFAULT;
+  }
+
   _render() {
-    const aspectRatio = this._config?.aspect_ratio ?? '4/3';
+    const aspectRatio = this._sanitizeAspectRatio(this._config?.aspect_ratio);
     const showControls = this._config?.show_controls !== false;
 
     this.shadowRoot.innerHTML = `
@@ -341,42 +366,83 @@ class FermaxIntercardCard extends HTMLElement {
   // ── Retry scheduling ─────────────────────────────────────────────────────────
 
   _scheduleRetry(delay = NO_STREAM_RETRY_MS) {
+    if (this._userHungUp) return; // User hung up — stay hung up, no auto-reconnect
     if (this._retryTimer) return; // Already pending
     this._retryTimer = setTimeout(() => {
       this._retryTimer = null;
+      if (this._userHungUp) return; // Re-check in case hangup happened meanwhile
       if (this._state !== 'live') this._connect();
     }, delay);
   }
 
   // ── WebRTC session ───────────────────────────────────────────────────────────
 
-  async _connect() {
+  /**
+   * Establish a WebRTC session with HA.
+   *
+   * @param {boolean} withMic — when false (default: idle poll + initial
+   *   connect) NO microphone is acquired and the audio m-line is negotiated
+   *   recvonly (receive intercom audio only). The OS mic indicator never
+   *   lights up while the dashboard sits idle.
+   *   When true (user pressed the mic button) the mic is acquired FIRST and
+   *   added as a sendrecv transceiver so the INITIAL offer carries the
+   *   outbound audio m-line — required because the HA camera WebRTC server
+   *   does a single offer/answer with no renegotiation, so a mic added after
+   *   the answer would never be transmitted.
+   */
+  async _connect(withMic = false) {
     if (!this._hass || !this._config) return;
-    if (this._pc) return; // Already connecting
+    // Synchronous re-entrancy lock — set BEFORE the first await so two
+    // overlapping _connect() calls can't both create a PC / subscription.
+    if (this._pc || this._connecting) return;
+    this._connecting = true;
 
+    // Generation guard — capture the current epoch. Any cleanup (card removed,
+    // view switched, superseding connect) bumps _connectEpoch; when we resume
+    // after an await and the epoch no longer matches, we abort and tear down
+    // anything we created so it can't leak.
+    const epoch = ++this._connectEpoch;
+
+    let pc = null;
+    let micStream = null;
     try {
-      // ── 1. Request mic — non-fatal if denied ──────────────────────────────
-      let micStream = null;
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: false,
-        });
-        this._micDenied = false;
-      } catch (err) {
-        // Mic not available or permission denied — video+audio receive only
-        this._micDenied = true;
-        console.info('[fermax-intercom-card] Mic unavailable:', err.name, err.message);
+      // ── 1. (Optional) acquire the mic BEFORE building the offer ───────────
+      // Only when the user explicitly asked to talk. Never during idle polling.
+      if (withMic) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
+          this._micDenied = false;
+        } catch (err) {
+          // Permission denied / no device — fall back to recvonly (receive
+          // only). Talkback stays off but the call still connects.
+          this._micDenied = true;
+          micStream = null;
+          console.info('[fermax-intercom-card] Mic unavailable:', err.name, err.message);
+        }
+        // The permission prompt is awaited above — re-check the epoch before
+        // we build anything so a teardown during the prompt can't leak.
+        if (epoch !== this._connectEpoch) {
+          if (micStream) micStream.getTracks().forEach(t => t.stop());
+          return;
+        }
       }
 
       // ── 2. Create RTCPeerConnection ───────────────────────────────────────
-      const pc = new RTCPeerConnection({ iceServers: STUN });
-      this._pc = pc;
+      pc = new RTCPeerConnection({ iceServers: STUN });
       this._pendingCandidates = [];
 
-      // Audio transceiver: sendrecv if mic available, recvonly otherwise
+      // Audio transceiver:
+      //   • with a mic  → sendrecv WITH the mic track, so the initial offer
+      //     carries the outbound m-line (talkback works on a single-offer
+      //     server).
+      //   • without     → recvonly, so we still negotiate an audio m-line for
+      //     RECEIVING intercom audio.
       if (micStream) {
         this._micStream = micStream;
+        this._micMuted  = false;
         pc.addTransceiver(micStream.getAudioTracks()[0], { direction: 'sendrecv' });
       } else {
         pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -427,7 +493,20 @@ class FermaxIntercardCard extends HTMLElement {
 
       // ── 6. Build offer ────────────────────────────────────────────────────
       const offer = await pc.createOffer();
+      if (epoch !== this._connectEpoch) { // Superseded / destroyed during await
+        try { pc.close(); } catch (_) {}
+        if (micStream) micStream.getTracks().forEach(t => t.stop());
+        return;
+      }
       await pc.setLocalDescription(offer);
+      if (epoch !== this._connectEpoch) { // Superseded / destroyed during await
+        try { pc.close(); } catch (_) {}
+        if (micStream) micStream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      // Publish the PC only now that it survived the awaits above.
+      this._pc = pc;
 
       // ── 7. Subscribe to HA WebRTC session ────────────────────────────────
       //
@@ -436,7 +515,7 @@ class FermaxIntercardCard extends HTMLElement {
       //   {type:"answer",   answer:"<SDP>"}      — after relay is ready
       //   {type:"error",    code:"no_stream", …} — no active stream
       //   {type:"candidate",candidate:{…}}       — server trickle ICE (rare)
-      this._unsub = await this._hass.connection.subscribeMessage(
+      const unsub = await this._hass.connection.subscribeMessage(
         (event) => this._handleEvent(pc, event),
         {
           type:      'camera/webrtc/offer',
@@ -444,6 +523,17 @@ class FermaxIntercardCard extends HTMLElement {
           offer:     pc.localDescription.sdp,
         },
       );
+      if (epoch !== this._connectEpoch) {
+        // Cleanup ran (or a newer connect superseded us) while subscribing —
+        // immediately cancel this subscription and close the PC so neither
+        // leaks; stop the mic tracks too.
+        try { unsub(); } catch (_) {}
+        try { pc.close(); } catch (_) {}
+        if (micStream) micStream.getTracks().forEach(t => t.stop());
+        if (this._pc === pc) this._pc = null;
+        return;
+      }
+      this._unsub = unsub;
 
       // Show the connecting spinner only if the server doesn't respond
       // immediately (avoids a flash for fast no_stream rejections).
@@ -453,9 +543,15 @@ class FermaxIntercardCard extends HTMLElement {
 
     } catch (err) {
       console.warn('[fermax-intercom-card] _connect error:', err);
+      if (pc && this._pc !== pc) { try { pc.close(); } catch (_) {} }
+      if (micStream && this._micStream !== micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+      }
       this._cleanup();
       this._applyState('idle');
       this._scheduleRetry(ERROR_RETRY_MS);
+    } finally {
+      this._connecting = false;
     }
   }
 
@@ -477,7 +573,8 @@ class FermaxIntercardCard extends HTMLElement {
       }
 
       case 'answer': {
-        // SDP answer from server — complete the negotiation
+        // SDP answer from server — the offer was ACCEPTED. Complete the
+        // negotiation. (The mic, if any, was already part of the offer.)
         clearTimeout(this._connectingTimer);
         this._connectingTimer = null;
         try {
@@ -538,36 +635,41 @@ class FermaxIntercardCard extends HTMLElement {
   // ── Controls ─────────────────────────────────────────────────────────────────
 
   async _toggleMic() {
-    if (!this._micStream) {
-      // No mic yet — try to acquire it on-demand (user may have just granted
-      // permission in the browser settings after the call started).
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        this._micStream = stream;
-        this._micDenied = false;
-
-        // Wire the newly-acquired track into the existing PC sender.
-        // Only works if the PC was set up with sendrecv (i.e. a sender exists).
-        // If the PC has only a recvonly transceiver we can't add a track
-        // without renegotiation — the mic will take effect on the next call.
-        if (this._pc) {
-          const sender = this._pc.getSenders().find(s => s.track?.kind === 'audio');
-          if (sender) {
-            await sender.replaceTrack(stream.getAudioTracks()[0]);
-          }
-        }
-      } catch (err) {
-        // Still denied — flash the button red to give visible feedback
-        this._micDenied = true;
-        console.warn('[fermax-intercom-card] Mic permission denied:', err.name);
-        this._flashMicDenied();
-        return;
-      }
+    // ── Mic already active → just mute/unmute locally (no reconnect) ─────────
+    if (this._micStream) {
+      this._micMuted = !this._micMuted;
+      this._micStream.getAudioTracks().forEach(t => { t.enabled = !this._micMuted; });
+      this._updateMicButton();
+      return;
     }
 
-    this._micMuted = !this._micMuted;
-    this._micStream.getAudioTracks().forEach(t => { t.enabled = !this._micMuted; });
-    this._updateMicButton();
+    // ── Mic off → reconnect WITH the mic ────────────────────────────────────
+    // The HA camera WebRTC server does a single offer/answer with no
+    // renegotiation, so enabling talkback means re-offering with a sendrecv
+    // audio m-line. Tear down the current session in-place (stay on the live
+    // view, don't drop to the snapshot) and reconnect with the mic.
+    this._micDenied = false;
+
+    // In-place teardown of the current session, keeping the visual state on
+    // 'connecting' and NOT scheduling an idle retry (mirrors part of _cleanup
+    // but preserves _userHungUp = false and skips the retry timer).
+    this._connectEpoch++;                     // invalidate any in-flight connect
+    clearTimeout(this._connectingTimer);
+    this._connectingTimer = null;
+    if (this._unsub) { try { this._unsub(); } catch (_) {} this._unsub = null; }
+    if (this._pc)    { try { this._pc.close(); } catch (_) {} this._pc = null; }
+    this._sessionId         = null;
+    this._pendingCandidates = [];
+
+    this._applyState('connecting');
+    await this._connect(true);
+
+    // If getUserMedia was denied during that reconnect, give visible feedback.
+    if (this._micDenied) {
+      this._flashMicDenied();
+    } else {
+      this._updateMicButton();
+    }
   }
 
   /** Flash the mic button red briefly to indicate permission was denied. */
@@ -604,6 +706,10 @@ class FermaxIntercardCard extends HTMLElement {
   }
 
   async _hangup() {
+    // Mark this as a user-initiated hangup so the retry/reconnect scheduler
+    // (and the connectionstatechange reconnect path) bail out — hanging up
+    // must stay hung up until the user re-opens or a fresh doorbell ring.
+    this._userHungUp = true;
     this._cleanup();
     this._applyState('idle');
     try {
@@ -611,12 +717,17 @@ class FermaxIntercardCard extends HTMLElement {
         entity_id: this._config.entity,
       });
     } catch (_) { /* ignore */ }
-    this._scheduleRetry(RECONNECT_DELAY_MS);
+    // NOTE: intentionally no _scheduleRetry here — see _userHungUp above.
   }
 
   // ── Cleanup ───────────────────────────────────────────────────────────────────
 
   _cleanup() {
+    // Invalidate any in-flight _connect(): bumping the epoch makes the resumed
+    // _connect() see a mismatch after its next await and tear down (close PC /
+    // call unsub) anything it created instead of leaking it.
+    this._connectEpoch++;
+
     clearTimeout(this._retryTimer);
     clearTimeout(this._connectingTimer);
     this._retryTimer      = null;

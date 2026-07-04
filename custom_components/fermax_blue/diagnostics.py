@@ -14,10 +14,16 @@ TO_REDACT = {
     "password",
     "username",
     "access_token",
+    "refresh_token",
+    "id_token",
     "fcm_token",
     "token",
     "fermax_auth_basic",
     "firebase_api_key",
+    "firebase_sender_id",
+    "firebase_app_id",
+    "firebase_project_id",
+    "firebase_package_name",
 }
 
 

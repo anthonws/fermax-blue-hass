@@ -69,6 +69,7 @@ class FermaxDoorLock(FermaxBlueEntity, LockEntity):
 
             if self._auto_lock_unsub:
                 self._auto_lock_unsub()
+                self._auto_lock_unsub = None
 
             @callback
             def _auto_lock(_now: Any) -> None:
@@ -79,6 +80,12 @@ class FermaxDoorLock(FermaxBlueEntity, LockEntity):
             self._auto_lock_unsub = async_call_later(self.hass, AUTO_LOCK_SECONDS, _auto_lock)
         else:
             _LOGGER.error("Failed to open door %s", self._door_name)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel any pending auto-lock timer when the entity is removed."""
+        if self._auto_lock_unsub:
+            self._auto_lock_unsub()
+            self._auto_lock_unsub = None
 
     async def async_lock(self, **kwargs: Any) -> None:
         """Lock the door (no-op, doors auto-lock)."""

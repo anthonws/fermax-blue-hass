@@ -143,33 +143,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
     try:
         await api.authenticate()
         pairings = await api.get_pairings()
+        # int() is inside the try so malformed config raises ConfigEntryNotReady
+        # rather than an unhandled ValueError leaking the entry data (audit #32).
+        firebase_config: dict[str, str | int] = {
+            "firebase_api_key": entry.data[CONF_FIREBASE_API_KEY],
+            "firebase_sender_id": int(entry.data[CONF_FIREBASE_SENDER_ID]),
+            "firebase_app_id": entry.data[CONF_FIREBASE_APP_ID],
+            "firebase_project_id": entry.data[CONF_FIREBASE_PROJECT_ID],
+            "firebase_package_name": entry.data[CONF_FIREBASE_PACKAGE_NAME],
+        }
     except Exception as err:
         await api.close()
         raise ConfigEntryNotReady(f"Failed to connect to Fermax API: {err}") from err
 
     scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     auto_response_file = entry.options.get("auto_response_file", "")
-    firebase_config: dict[str, str | int] = {
-        "firebase_api_key": entry.data[CONF_FIREBASE_API_KEY],
-        "firebase_sender_id": int(entry.data[CONF_FIREBASE_SENDER_ID]),
-        "firebase_app_id": entry.data[CONF_FIREBASE_APP_ID],
-        "firebase_project_id": entry.data[CONF_FIREBASE_PROJECT_ID],
-        "firebase_package_name": entry.data[CONF_FIREBASE_PACKAGE_NAME],
-    }
 
     coordinators: list[FermaxBlueCoordinator] = []
 
-    for pairing in pairings:
-        coordinator = FermaxBlueCoordinator(
-            hass, api, pairing, scan_interval, auto_response_file, firebase_config
-        )
-        await coordinator.async_config_entry_first_refresh()
+    try:
+        for pairing in pairings:
+            coordinator = FermaxBlueCoordinator(
+                hass, api, pairing, scan_interval, auto_response_file, firebase_config
+            )
+            await coordinator.async_config_entry_first_refresh()
 
-        storage_path = Path(hass.config.config_dir) / ".storage" / DOMAIN
-        await asyncio.to_thread(storage_path.mkdir, parents=True, exist_ok=True)
-        await coordinator.setup_notifications(storage_path)
+            storage_path = Path(hass.config.config_dir) / ".storage" / DOMAIN
+            await asyncio.to_thread(storage_path.mkdir, parents=True, exist_ok=True)
+            await coordinator.setup_notifications(storage_path)
 
-        coordinators.append(coordinator)
+            coordinators.append(coordinator)
+    except Exception as err:
+        # A later pairing failing must not leak the FCM listeners / API client
+        # already started for earlier pairings (audit #14).
+        for started in coordinators:
+            with contextlib.suppress(Exception):
+                await started.stop_notifications()
+        await api.close()
+        raise ConfigEntryNotReady(f"Failed to set up Fermax pairing: {err}") from err
 
     entry.runtime_data = coordinators
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinators
@@ -187,11 +198,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) -
             _LOGGER.error("send_audio: either audio_file or message is required")
             return
 
-        # Find the coordinator with an active stream
+        # Find the coordinator with an active stream across ALL config entries.
+        # Resolving from hass.data (not a captured list) means the service keeps
+        # working after a reload and can reach a second entry's stream (audit G4).
         active_coordinator = None
-        for coord in coordinators:
-            if coord.stream_session and coord.stream_session.is_active:
-                active_coordinator = coord
+        for entry_coordinators in hass.data.get(DOMAIN, {}).values():
+            for coord in entry_coordinators:
+                if coord.stream_session and coord.stream_session.is_active:
+                    active_coordinator = coord
+                    break
+            if active_coordinator:
                 break
 
         if not active_coordinator or not active_coordinator.stream_session:
@@ -361,11 +377,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: FermaxBlueConfigEntry) 
     coordinators = hass.data[DOMAIN].get(entry.entry_id, [])
     for coordinator in coordinators:
         await coordinator.stop_notifications()
-        await coordinator.api.close()
+
+    # A single API client is shared by all of this entry's coordinators; close
+    # it once, not once per coordinator (audit G7).
+    if coordinators:
+        with contextlib.suppress(Exception):
+            await coordinators[0].api.close()
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        # Remove the domain-level send_audio service once the last entry is gone
+        # so a stale handler can't linger after reload (audit G4).
+        if not hass.data.get(DOMAIN) and hass.services.has_service(DOMAIN, "send_audio"):
+            hass.services.async_remove(DOMAIN, "send_audio")
 
     return unload_ok

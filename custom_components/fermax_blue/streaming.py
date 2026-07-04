@@ -68,15 +68,24 @@ def _patch_pymediasoup_audio_channels() -> None:
 DEFAULT_SIGNALING_URL = "https://signaling-pro-duoxme.fermax.io"
 _PYMEDIASOUP_PATCHED = False
 
-_INSECURE_SCHEMES = ("http://", "ws://")
+_SECURE_SCHEMES = ("https", "wss")
 
 
 def _require_tls_url(url: str) -> None:
-    """Raise ValueError if url uses a plain-text (non-TLS) scheme."""
-    lowered = url.lower()
-    if any(lowered.startswith(scheme) for scheme in _INSECURE_SCHEMES):
+    """Raise ValueError unless url uses a TLS scheme (allowlist).
+
+    Uses urlparse (not startswith) so tricks like a leading space —
+    ' http://evil.fermax.io', which urlparse tolerates but a startswith
+    denylist does not — cannot slip a cleartext scheme past this check.
+    """
+    from urllib.parse import urlparse
+
+    if url != url.strip():
+        raise ValueError("Signaling URL must not contain leading/trailing whitespace.")
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in _SECURE_SCHEMES:
         raise ValueError(
-            f"Signaling URL '{url}' uses an insecure scheme. "
+            f"Signaling URL '{url}' does not use a TLS scheme. "
             "Only 'https://' or 'wss://' are allowed to prevent credential exposure."
         )
 
@@ -297,7 +306,10 @@ class FermaxSignalingClient:
 
         try:
             _require_tls_url(self._signaling_url)
-            await self._sio.connect(self._signaling_url, transports=["websocket"])
+            # Bound the engineio handshake: a host that accepts TCP but never
+            # completes the websocket upgrade would otherwise hang forever.
+            async with asyncio.timeout(15):
+                await self._sio.connect(self._signaling_url, transports=["websocket"])
 
             response = await self._sio.call(
                 "join_call",
@@ -311,7 +323,9 @@ class FermaxSignalingClient:
             )
 
             if not isinstance(response, dict) or "error" in response:
-                _LOGGER.error("join_call failed: %s", response)
+                # Don't log the full response — it may echo tokens/credentials.
+                err = response.get("error") if isinstance(response, dict) else "invalid response"
+                _LOGGER.error("join_call failed: %s", err)
                 return None
 
             result_data = response.get("result", {})
@@ -343,6 +357,8 @@ class FermaxSignalingClient:
 
         except Exception:
             _LOGGER.exception("Failed to connect to signaling server")
+            with contextlib.suppress(Exception):
+                await self._sio.disconnect()
             return None
 
     @staticmethod
@@ -527,16 +543,25 @@ class FermaxStreamSession:
         self._latest_frame: bytes | None = None
         self._active = False
         self._stop_requested = False  # Set by stop(); guards in _start_inner poll this
+        self._stopped = False  # Set once stop() has fully run; makes stop() idempotent
         self._room: Any = None
         self._recording_path: str | None = None
         self.video_relay: _TrackRelay | None = None
         self.audio_relay: _TrackRelay | None = None
+        self._audio_switch: Any = None  # Switchable source feeding the audio relay
+        self._audio_ready = False  # True once intercom audio is flowing (post-pickup)
+        self._switchable_track: Any = None  # Mic → intercom send track
         self._video_grab_q: asyncio.Queue[Any] | None = None
         self._audio_grab_q: asyncio.Queue[Any] | None = None
 
     @property
     def is_active(self) -> bool:
         return self._active
+
+    @property
+    def room_id(self) -> str:
+        """Return the mediasoup room id for this session."""
+        return self._room_id
 
     @property
     def latest_frame(self) -> bytes | None:
@@ -580,7 +605,7 @@ class FermaxStreamSession:
             return False
 
         def _handle_end_up(_code: str) -> None:
-            asyncio.get_event_loop().call_soon_threadsafe(
+            asyncio.get_running_loop().call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self.stop())
             )
 
@@ -697,7 +722,11 @@ class FermaxStreamSession:
                 rtp_capabilities=json.dumps(device_caps.dict(exclude_none=True)),
             )
             if not pickup_result:
-                _LOGGER.error("Pickup failed for %s", kind)
+                # Pickup is best-effort: video keeps working, only two-way audio
+                # is affected. Don't fail the whole session (see audit #15).
+                _LOGGER.warning(
+                    "Pickup failed for %s — continuing video-only, audio unavailable", kind
+                )
                 return ""
 
             # Extract our producer ID (server-assigned)
@@ -721,53 +750,82 @@ class FermaxStreamSession:
                         if isinstance(audio_consume.rtp_parameters, dict)
                         else audio_consume.rtp_parameters,
                     )
-                    _LOGGER.info("Audio consumer created after pickup")
+                    # Feed the real intercom audio into the already-negotiated
+                    # relay (created up front with a silent source), so the
+                    # browser's audio m-line goes live without renegotiation.
+                    if self._audio_switch is not None:
+                        self._audio_switch.set_source(self._audio_consumer.track)
+                    self._audio_ready = True
+                    _LOGGER.info("Audio consumer created after pickup — audio now live")
 
             return str(our_producer_id)
 
-        # 6. Produce audio (48kHz like the APK) — triggers onProduce → pickup
         if self._stop_requested:
-            _LOGGER.debug("Stream setup aborted before produce/pickup (stop requested)")
+            _LOGGER.debug("Stream setup aborted before go-live (stop requested)")
             return False
+
+        # ── Go live on VIDEO immediately ──────────────────────────────────────
+        # The video RTP path is fully negotiated now, but the ~10s Fermax pickup
+        # (produce → onProduce → pickup, below) still has to complete for AUDIO.
+        # Historically the relay/grabber were started only after pickup, so the
+        # card couldn't show video for ~10s (audit #2). Instead we start the
+        # video relay + grabber and set _active here, and pre-create the audio
+        # relay backed by a SILENT switchable source so its m-line is negotiated
+        # up front. When pickup completes, on_produce swaps the real intercom
+        # audio into that relay — no WebRTC renegotiation needed. The coordinator
+        # sets stream_session before awaiting start(), and camera's offer handler
+        # polls it, so the card answers with video within a few seconds.
         self._switchable_track = _create_switchable_audio_track()
-        self._audio_producer = await self._send_transport.produce(
-            track=self._switchable_track,
-            stopTracks=False,
-            appData={},
-        )
-        _LOGGER.info("Audio producer started, pickup completed")
 
-        # 8. Initialize recording (frames collected in _grab_frames) — only for real calls
-        if self._record:
-            self._init_recording()
-
-        # 9. Create track relays (fan-out: MJPEG grabber + WebRTC consumers)
+        # 6. Video relay (fan-out: MJPEG/snapshot grabber + WebRTC consumers)
         self.video_relay = _TrackRelay(self._consumer.track, "video")
         self.video_relay.start()
         _vq: asyncio.Queue[Any] = asyncio.Queue(maxsize=30)
         self.video_relay._subscribers.append(_vq)
         self._video_grab_q = _vq
 
-        if self._audio_consumer:
-            self.audio_relay = _TrackRelay(self._audio_consumer.track, "audio")
+        # 7. Audio relay backed by a silent source until pickup fills it in.
+        if room.audio_producer_id:
+            self._audio_switch = _create_switchable_audio_track()
+            self.audio_relay = _TrackRelay(self._audio_switch, "audio")
             self.audio_relay.start()
             _aq: asyncio.Queue[Any] = asyncio.Queue(maxsize=30)
             self.audio_relay._subscribers.append(_aq)
             self._audio_grab_q = _aq
         else:
+            self._audio_switch = None
             self.audio_relay = None
             self._audio_grab_q = None
 
-        # 10. Start frame grabber + audio recorder
+        # 8. Initialize recording (frames collected in _grab_frames)
+        if self._record:
+            self._init_recording()
+
+        # 9. Start frame grabber (+ audio recorder if the room has audio)
         self._active = True
         self._frame_task = asyncio.create_task(self._grab_frames())
-        if self._audio_consumer:
-            self._audio_task: asyncio.Task | None = asyncio.create_task(
-                self._grab_audio()
-            )
+        if self.audio_relay is not None:
+            self._audio_task: asyncio.Task | None = asyncio.create_task(self._grab_audio())
         else:
             self._audio_task = None
-        _LOGGER.info("Stream session started for room %s", self._room_id)
+        _LOGGER.info("Stream session live (video) for room %s", self._room_id)
+
+        # 10. Produce mic audio → triggers onProduce → pickup (~10s) → real
+        # intercom audio is swapped into the audio relay by on_produce.
+        if self._stop_requested:
+            _LOGGER.debug("Stream setup aborted before produce/pickup (stop requested)")
+            return True  # video is already live; abort only the audio path
+        try:
+            self._audio_producer = await self._send_transport.produce(
+                track=self._switchable_track,
+                stopTracks=False,
+                appData={},
+            )
+            _LOGGER.info("Audio producer started, pickup completed")
+        except Exception:
+            # Video stays live; only two-way audio is lost.
+            _LOGGER.warning("Audio produce/pickup failed — video-only", exc_info=True)
+
         return True
 
     def _init_recording(self) -> None:
@@ -954,12 +1012,29 @@ class FermaxStreamSession:
         except Exception:
             _LOGGER.debug("Audio grabber error", exc_info=True)
 
+    def _encode_frame(self, frame: Any) -> bytes:
+        """Decode a video frame to JPEG once (with the LIVE overlay).
+
+        Runs in a worker thread (CPU-bound: PyAV decode + libjpeg encode).
+        The overlay is burned in and the single JPEG is reused for both the
+        snapshot/MJPEG fallback and the recording buffer (audit #3, #7).
+        """
+        img = frame.to_image()
+        img = self._overlay_live_indicator(img)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=75)
+        return buf.getvalue()
+
     async def _grab_frames(self) -> None:
-        """Read video frames from the relay queue, encode as JPEG."""
+        """Read video frames from the relay queue, encode as JPEG off-loop."""
         from aiortc.mediastreams import MediaStreamError
 
         _LOGGER.info("Frame grabber started (relay mode)")
         frame_count = 0
+        # The WebRTC card consumes raw frames via the relay directly, so when
+        # nothing needs a JPEG we only keep a low-rate snapshot fallback. Encode
+        # every frame only while recording (audit #8).
+        encode_every = 1 if self._record else 5
         try:
             while self._active:
                 if self._video_grab_q is None:
@@ -967,27 +1042,19 @@ class FermaxStreamSession:
                     continue
                 frame = await self._video_grab_q.get()
                 frame_count += 1
-                img = frame.to_image()
-
-                # Save raw frame for recording (without LIVE overlay)
-                raw_buf = io.BytesIO()
-                img.save(raw_buf, format="JPEG", quality=75)
-                raw_jpeg = raw_buf.getvalue()
-                if (
+                recording = (
                     hasattr(self, "_recording_frames")
                     and self._recording_frames is not None
-                ):
-                    self._recording_frames.append(raw_jpeg)
-
-                # Add LIVE overlay for display
-                img = self._overlay_live_indicator(img)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=75)
-                self._latest_frame = buf.getvalue()
+                )
+                if not recording and frame_count != 1 and frame_count % encode_every != 0:
+                    continue  # skip encode for throttled snapshot frames
+                # Offload decode+encode so the event loop never stalls (audit #3)
+                jpeg = await asyncio.to_thread(self._encode_frame, frame)
+                if recording:
+                    self._recording_frames.append(jpeg)
+                self._latest_frame = jpeg
                 if frame_count == 1:
-                    _LOGGER.info(
-                        "First frame received: %d bytes", len(self._latest_frame)
-                    )
+                    _LOGGER.info("First frame received: %d bytes", len(jpeg))
                 elif frame_count % 100 == 0:
                     _LOGGER.debug("Frame %d received", frame_count)
         except MediaStreamError:
@@ -998,11 +1065,18 @@ class FermaxStreamSession:
             _LOGGER.exception("Frame grabber error after %d frames", frame_count)
         finally:
             self._active = False
-            if self._on_end:
+            # Only fire the natural end-of-stream callback when the track ended
+            # on its own. During a deliberate stop() the coordinator already
+            # manages teardown; firing _on_end here would race and could clobber
+            # a newer session (audit #26).
+            if self._on_end and not self._stop_requested:
                 self._on_end()
 
     async def stop(self) -> None:
         """Stop the streaming session and clean up."""
+        if self._stopped:
+            return  # idempotent: multiple stop paths may race (audit #27)
+        self._stopped = True
         self._active = False
         self._stop_requested = True  # Signal _start_inner guards to abort cleanly
 

@@ -61,8 +61,13 @@ class _MicTrackSource:
         """Return the next audio frame from the browser mic."""
         try:
             return await self._track.recv()
-        except Exception:
-            raise StopIteration from None
+        except Exception as err:
+            # An async recv() must never raise StopIteration — PEP 479 turns it
+            # into a RuntimeError that silently kills two-way audio. Signal the
+            # end of the track the way aiortc expects instead (audit #29).
+            from aiortc.mediastreams import MediaStreamError
+
+            raise MediaStreamError from err
 
 
 class FermaxCamera(FermaxBlueEntity, Camera):
@@ -98,6 +103,15 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                     self._on_doorbell_ring,
                 )
             )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Close any in-flight WebRTC PCs on entity/platform unload (audit #12)."""
+        pending = list(self._pending_pcs.values())
+        self._pending_pcs.clear()
+        for pc in pending:
+            with contextlib.suppress(Exception):
+                await pc.close()
+        await super().async_will_remove_from_hass()
 
     @callback
     def _on_doorbell_ring(self) -> None:
@@ -257,8 +271,10 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                 "WebRTC offer received — stream starting, waiting for relay (session %s)",
                 session_id,
             )
-            for _ in range(50):
-                await asyncio.sleep(0.5)
+            # Poll at 0.1s (not 0.5s) so we answer within ~100ms of the relay
+            # becoming ready rather than up to 500ms late (audit #18).
+            for _ in range(250):
+                await asyncio.sleep(0.1)
                 session = self.coordinator.stream_session
                 if session and session.is_active and session.video_relay is not None:
                     _LOGGER.info(
@@ -306,8 +322,11 @@ class FermaxCamera(FermaxBlueEntity, Camera):
                     gather_complete.set()
 
             await pc.setLocalDescription(answer)
+            # On a LAN host/srflx candidates gather in well under a second;
+            # cap the wait low so a stalled STUN/TURN probe can't delay live
+            # video for long — we send whatever SDP we have (audit #19).
             try:
-                await asyncio.wait_for(gather_complete.wait(), timeout=10.0)
+                await asyncio.wait_for(gather_complete.wait(), timeout=4.0)
             except asyncio.TimeoutError:
                 _LOGGER.warning(
                     "ICE gathering timed out for WebRTC session %s, sending partial SDP",

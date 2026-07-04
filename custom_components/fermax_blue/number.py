@@ -8,6 +8,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     DOMAIN,
@@ -30,7 +31,7 @@ async def async_setup_entry(
     async_add_entities(FermaxStreamDurationNumber(c) for c in coordinators)
 
 
-class FermaxStreamDurationNumber(FermaxBlueEntity, NumberEntity):
+class FermaxStreamDurationNumber(FermaxBlueEntity, NumberEntity, RestoreEntity):
     """Number entity to control stream duration."""
 
     _attr_translation_key = "stream_duration"
@@ -43,6 +44,18 @@ class FermaxStreamDurationNumber(FermaxBlueEntity, NumberEntity):
     def __init__(self, coordinator: FermaxBlueCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{self._device_id}_stream_duration"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last stream duration across restarts (audit G2)."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (None, "unknown", "unavailable"):
+            try:
+                value = int(float(last.state))
+            except (ValueError, TypeError):
+                return
+            if MIN_STREAM_DURATION <= value <= MAX_STREAM_DURATION:
+                self.coordinator.stream_duration = value
 
     @property
     def native_value(self) -> float:
