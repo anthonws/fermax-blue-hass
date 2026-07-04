@@ -24,12 +24,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import socketio
-from aiortc import MediaStreamTrack
 
 _LOGGER = logging.getLogger(__name__)
 
-# Suppress noisy H264 decode warnings (expected on stream start before first keyframe)
-logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
+# aiortc/pymediasoup are optional — not available on HA 2026.7+ (av==17.x conflict).
+# All streaming functionality degrades gracefully when they are absent.
+try:
+    from aiortc import MediaStreamTrack
+
+    _AIORTC_AVAILABLE = True
+    # Suppress noisy H264 decode warnings (expected on stream start before first keyframe)
+    logging.getLogger("aiortc.codecs.h264").setLevel(logging.ERROR)
+except ImportError:
+    MediaStreamTrack = object  # type: ignore[assignment,misc]
+    _AIORTC_AVAILABLE = False
 
 SIGNALING_VERSION = "0.8.2"
 
@@ -57,7 +65,6 @@ def _patch_pymediasoup_audio_channels() -> None:
     _Handler.getNativeRtpCapabilities = _patched_get  # type: ignore[assignment]
 
 
-_patch_pymediasoup_audio_channels()
 DEFAULT_SIGNALING_URL = "wss://signaling-pro-duoxme.fermax.io"
 
 _INSECURE_SCHEMES = ("http://", "ws://")
@@ -552,6 +559,7 @@ class FermaxStreamSession:
             return False
 
     async def _start_inner(self) -> bool:
+        _patch_pymediasoup_audio_channels()
         from pymediasoup import Device
         from pymediasoup.handlers.aiortc_handler import AiortcHandler
         from pymediasoup.models.transport import (

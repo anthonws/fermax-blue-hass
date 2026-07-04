@@ -37,6 +37,25 @@ from .streaming import DEFAULT_SIGNALING_URL, FermaxStreamSession
 
 _LOGGER = logging.getLogger(__name__)
 
+_PYMEDIASOUP_AVAILABLE: bool | None = None
+
+
+def _pymediasoup_available() -> bool:
+    """Return True if pymediasoup (and aiortc) can be imported."""
+    global _PYMEDIASOUP_AVAILABLE
+    if _PYMEDIASOUP_AVAILABLE is None:
+        try:
+            import pymediasoup  # noqa: F401
+
+            _PYMEDIASOUP_AVAILABLE = True
+        except ImportError:
+            _PYMEDIASOUP_AVAILABLE = False
+            _LOGGER.warning(
+                "pymediasoup is not installed (av version conflict with HA 2026.7+). "
+                "Live video streaming is disabled; door opening and notifications still work."
+            )
+    return _PYMEDIASOUP_AVAILABLE
+
 DOORBELL_RESET_SECONDS = 30
 CAMERA_TIMEOUT_SECONDS = 90
 
@@ -377,6 +396,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
     async def start_camera_preview(self) -> DivertResponse | None:
         """Start camera preview (auto-on) to view the intercom camera."""
+        if not _pymediasoup_available():
+            return None
         if not self.notification_listener or not self.notification_listener.fcm_token:
             _LOGGER.error("Cannot start camera: no FCM token available")
             return None
@@ -469,6 +490,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         record: bool = True,
     ) -> None:
         """Start a video stream session for the given room."""
+        if not _pymediasoup_available():
+            return
         await self.stop_stream()
 
         if not self.notification_listener:
