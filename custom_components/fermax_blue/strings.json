@@ -26,6 +26,7 @@
     },
     "error": {
       "invalid_auth": "Invalid credentials. Please check your email and password.",
+      "invalid_url": "Fermax URLs must be valid HTTPS URLs.",
       "cannot_connect": "Unable to connect to Fermax Blue servers.",
       "no_devices": "No paired devices found on this account."
     },
@@ -40,13 +41,27 @@
         "data": {
           "scan_interval": "Polling interval (minutes)",
           "recording_retention": "Recording retention (days)",
-          "auto_response": "Auto-respond to doorbell with audio",
           "auto_response_file": "Audio file path for auto-response"
         }
       }
     }
   },
   "entity": {
+    "number": {
+      "stream_duration": {
+        "name": "Stream duration"
+      }
+    },
+    "select": {
+      "call_mode": {
+        "name": "Call mode",
+        "state": {
+          "notify_only": "Notify only",
+          "record": "Record",
+          "auto_respond": "Auto-respond"
+        }
+      }
+    },
     "binary_sensor": {
       "connection": {
         "name": "Connection"

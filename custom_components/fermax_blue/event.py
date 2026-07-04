@@ -13,6 +13,25 @@ from .coordinator import FermaxBlueCoordinator
 from .entity import FermaxBlueEntity
 
 
+class FermaxBlueEventEntity(FermaxBlueEntity, EventEntity):
+    """Base for Fermax event entities, decoupled from device connectivity.
+
+    Unlike command/state entities, events are momentary historical markers. If
+    availability tracked ``connection_state`` (as the base entity does), a
+    transient intercom disconnect — or the brief window during an HA restart —
+    would flap the entity to ``unavailable`` and back. On recovery the
+    EventEntity restores its last event (e.g. ``ring``) and HA fires state
+    triggers, producing a phantom doorbell ring with no FCM message involved.
+    Staying available avoids that flap; a real event still fires via
+    ``_trigger_event``.
+    """
+
+    @property
+    def available(self) -> bool:
+        """Event entities remain available regardless of connection state."""
+        return True
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -30,12 +49,11 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class FermaxDoorbellEvent(FermaxBlueEntity, EventEntity):
+class FermaxDoorbellEvent(FermaxBlueEventEntity):
     """Event entity for doorbell rings."""
 
     _attr_translation_key = "doorbell"
     _attr_event_types = ["ring"]
-    _attr_icon = "mdi:bell-ring"
 
     def __init__(self, coordinator: FermaxBlueCoordinator) -> None:
         super().__init__(coordinator)
@@ -60,12 +78,11 @@ class FermaxDoorbellEvent(FermaxBlueEntity, EventEntity):
         self.async_write_ha_state()
 
 
-class FermaxDoorOpenedEvent(FermaxBlueEntity, EventEntity):
+class FermaxDoorOpenedEvent(FermaxBlueEventEntity):
     """Event entity for door openings."""
 
     _attr_translation_key = "door_opened"
     _attr_event_types = ["door_opened"]
-    _attr_icon = "mdi:door-open"
 
     def __init__(self, coordinator: FermaxBlueCoordinator) -> None:
         super().__init__(coordinator)
@@ -88,12 +105,11 @@ class FermaxDoorOpenedEvent(FermaxBlueEntity, EventEntity):
         self.async_write_ha_state()
 
 
-class FermaxCameraOnEvent(FermaxBlueEntity, EventEntity):
+class FermaxCameraOnEvent(FermaxBlueEventEntity):
     """Event entity for camera preview activations."""
 
     _attr_translation_key = "camera_on"
     _attr_event_types = ["camera_on"]
-    _attr_icon = "mdi:cctv"
 
     def __init__(self, coordinator: FermaxBlueCoordinator) -> None:
         super().__init__(coordinator)

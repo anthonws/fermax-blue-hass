@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+from collections import deque
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.dispatcher import dispatcher_send
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -25,6 +29,9 @@ from .api import (
     Pairing,
 )
 from .const import (
+    CALL_MODE_AUTO_RESPOND,
+    CALL_MODE_NOTIFY,
+    DEFAULT_STREAM_DURATION,
     DOMAIN,
     RECORDINGS_DIR,
     SIGNAL_CALL_ENDED,
@@ -56,8 +63,24 @@ def _pymediasoup_available() -> bool:
             )
     return _PYMEDIASOUP_AVAILABLE
 
+
+# FCM re-delivers recent notifications when the listener reconnects after a
+# reload/restart, causing phantom doorbell rings. Ignore them briefly.
+NOTIFICATION_GRACE_PERIOD = 10
+ALLOWED_SIGNALING_DOMAIN = ".fermax.io"
+
 DOORBELL_RESET_SECONDS = 30
 CAMERA_TIMEOUT_SECONDS = 90
+
+
+def _is_trusted_signaling_url(url: str) -> bool:
+    """Reject signaling URLs outside known Fermax domains."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return host.endswith(ALLOWED_SIGNALING_DOMAIN) or host == "fermax.io"
+    except ValueError:
+        return False
 
 
 class FermaxBlueCoordinator(DataUpdateCoordinator):
@@ -98,8 +121,32 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._storage_path: Path | None = None
         self._auto_response_file = auto_response_file
         self._firebase_config = firebase_config or {}
-        self._processed_notifications: set[str] = set()
+        self._call_mode = CALL_MODE_NOTIFY
+        self._stream_duration = DEFAULT_STREAM_DURATION
+        self._stream_stop_unsub: CALLBACK_TYPE | None = None
+        self._processed_notifications: deque[str] = deque(maxlen=100)
+        self._notification_start_time: float | None = None
         self._webrtc_peers: dict[str, Any] = {}  # session_id -> RTCPeerConnection
+
+    @property
+    def call_mode(self) -> str:
+        """Return the current call mode."""
+        return self._call_mode
+
+    @call_mode.setter
+    def call_mode(self, value: str) -> None:
+        """Set the call mode."""
+        self._call_mode = value
+
+    @property
+    def stream_duration(self) -> int:
+        """Return the configured stream duration in seconds."""
+        return self._stream_duration
+
+    @stream_duration.setter
+    def stream_duration(self, value: int) -> None:
+        """Set the stream duration in seconds."""
+        self._stream_duration = value
 
     @property
     def last_photo(self) -> bytes | None:
@@ -117,6 +164,23 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         path = self._last_frame_path()
         if path and self._last_photo:
             await asyncio.to_thread(path.write_bytes, self._last_photo)
+
+    async def _save_call_photo(self, photo: bytes) -> None:
+        """Save a doorbell call photo to the recordings directory."""
+        from datetime import datetime
+
+        media_root = self.hass.config.media_dirs.get("local", "/media")
+        recordings_dir = Path(media_root) / RECORDINGS_DIR
+        await asyncio.to_thread(recordings_dir.mkdir, parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = recordings_dir / f"{timestamp}_photo.jpg"
+        await asyncio.to_thread(path.write_bytes, photo)
+        _LOGGER.info("Call photo saved: %s (%d KB)", path, len(photo) // 1024)
+
+    async def ensure_notifications_running(self) -> None:
+        """Watchdog hook: revive the FCM listener if it died."""
+        if self.notification_listener:
+            await self.notification_listener.ensure_running()
 
     async def _load_last_photo(self) -> None:
         """Load persisted last photo from disk."""
@@ -261,6 +325,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         if fcm_token:
             await self.api.register_app_token(fcm_token, active=True)
             await self.notification_listener.start()
+            self._notification_start_time = time.monotonic()
             _LOGGER.info(
                 "Notification listener started for device %s",
                 self.pairing.device_id,
@@ -282,12 +347,20 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         if persistent_id in self._processed_notifications:
             _LOGGER.debug("Skipping duplicate notification: %s", persistent_id)
             return
-        self._processed_notifications.add(persistent_id)
-        # Keep set bounded
-        if len(self._processed_notifications) > 100:
-            self._processed_notifications = set(
-                list(self._processed_notifications)[-50:]
+
+        # After a reload/restart, FCM re-delivers recent notifications.
+        # Ignore them during the grace period to avoid phantom doorbell rings.
+        if (
+            self._notification_start_time is not None
+            and time.monotonic() - self._notification_start_time < NOTIFICATION_GRACE_PERIOD
+        ):
+            _LOGGER.debug(
+                "Ignoring re-delivered notification during grace period: %s",
+                persistent_id,
             )
+            return
+
+        self._processed_notifications.append(persistent_id)
 
         _LOGGER.info(
             "Doorbell notification for %s: %s",
@@ -300,27 +373,39 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
         # ACK the notification for reliability
         fcm_message_id = (
-            notification.get("fcmMessageId")
-            or data.get("fcmMessageId")
-            or persistent_id
+            notification.get("fcmMessageId") or data.get("fcmMessageId") or persistent_id
         )
         notification_type = data.get("FermaxNotificationType", "")
         is_call = notification_type in ("Call", "CallAttend", "CallEnd")
-        self.hass.async_create_task(
-            self.api.ack_notification(fcm_message_id, is_call=is_call)
-        )
+        self.hass.async_create_task(self.api.ack_notification(fcm_message_id, is_call=is_call))
 
-        # Stream for both Call (doorbell, with recording) and Autoon (preview, no recording)
+        # Start video stream based on call mode:
+        # - Autoon (camera preview button): always start stream
+        # - Call (doorbell): depends on call_mode setting
         room_id = data.get("RoomId")
-        if room_id and notification_type in ("Call", "Autoon"):
+        should_stream = room_id and (
+            notification_type == "Autoon"
+            or (notification_type == "Call" and self._call_mode != CALL_MODE_NOTIFY)
+        )
+        if should_stream:
             socket_url = data.get("SocketUrl", DEFAULT_SIGNALING_URL)
             fermax_token = data.get("FermaxToken", "")
+            if not _is_trusted_signaling_url(socket_url):
+                _LOGGER.warning(
+                    "Rejected untrusted signaling URL from notification: %s",
+                    socket_url,
+                )
+                socket_url = DEFAULT_SIGNALING_URL
             # Only record for real doorbell calls, not manual camera previews
             record = notification_type == "Call"
             self.hass.async_create_task(
                 self._start_stream(room_id, socket_url, fermax_token, record=record)
             )
-            if notification_type == "Call" and self._auto_response_file:
+            if (
+                notification_type == "Call"
+                and self._call_mode == CALL_MODE_AUTO_RESPOND
+                and self._auto_response_file
+            ):
                 self.hass.async_create_task(self._auto_respond())
 
         # Only trigger doorbell ring for actual calls, not auto-on
@@ -329,7 +414,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             self._photo_fetch_pending = True
 
             door_key = data.get("AccessDoorKey", data.get("accessDoorKey", "GENERAL"))
-            dispatcher_send(
+            async_dispatcher_send(
                 self.hass,
                 SIGNAL_DOORBELL_RING.format(self.pairing.device_id, door_key),
             )
@@ -342,7 +427,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             def _reset_ringing(_now: Any) -> None:
                 """Reset doorbell ringing state."""
                 self._doorbell_ringing = False
-                dispatcher_send(
+                async_dispatcher_send(
                     self.hass,
                     SIGNAL_CALL_ENDED.format(self.pairing.device_id),
                 )
@@ -387,7 +472,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             success = await self.api.open_door(self.pairing.device_id, door.access_id)
 
         if success:
-            dispatcher_send(
+            async_dispatcher_send(
                 self.hass,
                 SIGNAL_DOOR_OPENED.format(self.pairing.device_id),
             )
@@ -466,21 +551,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
     async def set_photo_caller(self, enabled: bool) -> None:
         """Enable or disable photo caller."""
         await self.api.set_photo_caller(self.pairing.device_id, enabled=enabled)
-        # Update local state to reflect the change immediately
         if self.device_info:
-            self.device_info = DeviceInfo(
-                device_id=self.device_info.device_id,
-                connection_state=self.device_info.connection_state,
-                status=self.device_info.status,
-                family=self.device_info.family,
-                device_type=self.device_info.device_type,
-                subtype=self.device_info.subtype,
-                unit_number=self.device_info.unit_number,
-                photocaller=enabled,
-                streaming_mode=self.device_info.streaming_mode,
-                is_monitor=self.device_info.is_monitor,
-                wireless_signal=self.device_info.wireless_signal,
-            )
+            self.device_info = replace(self.device_info, photocaller=enabled)
 
     async def _start_stream(
         self,
@@ -529,7 +601,19 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         if success:
             self._camera_active = True
             _LOGGER.info("Video stream started for room %s", room_id)
-            dispatcher_send(self.hass, SIGNAL_CAMERA_ON.format(self.pairing.device_id))
+            async_dispatcher_send(self.hass, SIGNAL_CAMERA_ON.format(self.pairing.device_id))
+
+            # Schedule auto-stop after configured duration
+            if self._stream_stop_unsub:
+                self._stream_stop_unsub()
+            @callback
+            def _auto_stop_stream(_now: Any) -> None:
+                _LOGGER.info("Stream auto-stop after %ds", self._stream_duration)
+                self._stream_stop_unsub = None
+                self.hass.async_create_task(self.stop_stream())
+            self._stream_stop_unsub = async_call_later(
+                self.hass, self._stream_duration, _auto_stop_stream
+            )
         else:
             _LOGGER.warning("Failed to start video stream for room %s", room_id)
             self._stream_session = None
@@ -574,8 +658,14 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
     async def stop_stream(self) -> None:
         """Stop the current video stream session and all WebRTC peer connections."""
+        if self._stream_stop_unsub:
+            self._stream_stop_unsub()
+            self._stream_stop_unsub = None
         await self._close_all_webrtc_peers()
         if self._stream_session:
+            if self._stream_session.latest_frame:
+                self._last_photo = self._stream_session.latest_frame
+                self.hass.async_create_task(self._save_last_photo())
             await self._stream_session.stop()
             self._stream_session = None
             self._camera_active = False

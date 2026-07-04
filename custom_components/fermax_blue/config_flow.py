@@ -39,7 +39,6 @@ from .const import (
     MIN_SCAN_INTERVAL,
 )
 
-CONF_AUTO_RESPONSE = "auto_response"
 CONF_AUTO_RESPONSE_FILE = "auto_response_file"
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +51,15 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
     }
 )
+
+
+def _https_url(value: str) -> str:
+    """Validate that a URL uses HTTPS scheme."""
+    url: str = vol.Url()(value)
+    if not url.startswith("https://"):
+        raise vol.Invalid("URL must use HTTPS")
+    return url
+
 
 STEP_CREDENTIALS_SCHEMA = vol.Schema(
     {
@@ -76,9 +84,7 @@ class FermaxBlueConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._user_data: dict[str, Any] = {}
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial step — user credentials."""
         if user_input is not None:
             self._user_data = user_input
@@ -102,11 +108,22 @@ class FermaxBlueConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=STEP_CREDENTIALS_SCHEMA,
         )
 
-    async def _async_validate_and_create(
-        self, data: dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def _async_validate_and_create(self, data: dict[str, Any]) -> ConfigFlowResult:
         """Validate credentials and create the config entry."""
         errors: dict[str, str] = {}
+        for field in (CONF_FERMAX_AUTH_URL, CONF_FERMAX_BASE_URL):
+            try:
+                data[field] = _https_url(data[field])
+            except vol.Invalid:
+                errors[field] = "invalid_url"
+
+        if errors:
+            return self.async_show_form(
+                step_id="credentials",
+                data_schema=STEP_CREDENTIALS_SCHEMA,
+                errors=errors,
+            )
+
         client = get_async_client(self.hass)
         api = FermaxBlueApi(
             data[CONF_USERNAME],
@@ -155,9 +172,7 @@ class FermaxBlueConfigFlow(ConfigFlow, domain=DOMAIN):
 class FermaxBlueOptionsFlow(OptionsFlow):
     """Handle options for Fermax Blue."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(data=user_input)
@@ -184,12 +199,6 @@ class FermaxBlueOptionsFlow(OptionsFlow):
                         vol.Coerce(int),
                         vol.Range(min=1, max=90),
                     ),
-                    vol.Optional(
-                        CONF_AUTO_RESPONSE,
-                        default=self.config_entry.options.get(
-                            CONF_AUTO_RESPONSE, False
-                        ),
-                    ): bool,
                     vol.Optional(
                         CONF_AUTO_RESPONSE_FILE,
                         default=self.config_entry.options.get(

@@ -65,7 +65,8 @@ def _patch_pymediasoup_audio_channels() -> None:
     _Handler.getNativeRtpCapabilities = _patched_get  # type: ignore[assignment]
 
 
-DEFAULT_SIGNALING_URL = "wss://signaling-pro-duoxme.fermax.io"
+DEFAULT_SIGNALING_URL = "https://signaling-pro-duoxme.fermax.io"
+_PYMEDIASOUP_PATCHED = False
 
 _INSECURE_SCHEMES = ("http://", "ws://")
 
@@ -559,7 +560,10 @@ class FermaxStreamSession:
             return False
 
     async def _start_inner(self) -> bool:
-        _patch_pymediasoup_audio_channels()
+        global _PYMEDIASOUP_PATCHED
+        if not _PYMEDIASOUP_PATCHED:
+            _patch_pymediasoup_audio_channels()
+            _PYMEDIASOUP_PATCHED = True
         from pymediasoup import Device
         from pymediasoup.handlers.aiortc_handler import AiortcHandler
         from pymediasoup.models.transport import (
@@ -795,13 +799,16 @@ class FermaxStreamSession:
         import subprocess
         import tempfile
 
-        mjpeg_path = tempfile.mktemp(suffix=".mjpeg")
-        pcm_path = tempfile.mktemp(suffix=".pcm")
+        mjpeg_fd, mjpeg_path = tempfile.mkstemp(suffix=".mjpeg")
+        pcm_fd, pcm_path = tempfile.mkstemp(suffix=".pcm")
         has_audio = bool(audio_frames)
+
+        def _write_and_close(fd: int, data: bytes) -> None:
+            os.write(fd, data)
+            os.close(fd)
+
         try:
-            await asyncio.to_thread(
-                lambda: open(mjpeg_path, "wb").write(b"".join(video_frames))  # noqa: SIM115
-            )
+            await asyncio.to_thread(_write_and_close, mjpeg_fd, b"".join(video_frames))
             if has_audio:
                 import numpy as np
 
@@ -836,9 +843,7 @@ class FermaxStreamSession:
                     recv_arr.astype(np.int32) + sent_arr.astype(np.int32), -32768, 32767
                 ).astype(np.int16)
 
-                await asyncio.to_thread(
-                    lambda: open(pcm_path, "wb").write(mixed.tobytes())  # noqa: SIM115
-                )
+                await asyncio.to_thread(_write_and_close, pcm_fd, mixed.tobytes())
 
             cmd = [
                 "ffmpeg",
@@ -879,6 +884,7 @@ class FermaxStreamSession:
                 cmd,
                 capture_output=True,
                 timeout=60,
+                shell=False,
             )
             if proc.returncode == 0:
                 size = await asyncio.to_thread(os.path.getsize, self._recording_path)

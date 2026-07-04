@@ -30,9 +30,22 @@ PLATFORMS = [
     "camera",
     "event",
     "lock",
+    "number",
+    "select",
     "sensor",
     "switch",
 ]
+
+# Call mode options (select entity)
+CALL_MODE_NOTIFY = "notify_only"
+CALL_MODE_RECORD = "record"
+CALL_MODE_AUTO_RESPOND = "auto_respond"
+CALL_MODES = [CALL_MODE_NOTIFY, CALL_MODE_RECORD, CALL_MODE_AUTO_RESPOND]
+
+# Stream duration limits (seconds)
+DEFAULT_STREAM_DURATION = 30
+MIN_STREAM_DURATION = 10
+MAX_STREAM_DURATION = 120
 
 # Config keys — API/Firebase credentials (provided by the user)
 CONF_FERMAX_AUTH_URL = "fermax_auth_url"
@@ -52,3 +65,8 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_RECORDING_RETENTION = "recording_retention"
 DEFAULT_RECORDING_RETENTION = 10  # days
 RECORDINGS_DIR = "fermax_recordings"
+
+# Watchdog poll interval (seconds) for the FCM push receiver.
+# The upstream firebase_messaging client aborts the receiver after repeated
+# transport errors and never reconnects on its own; the watchdog revives it.
+FCM_WATCHDOG_INTERVAL = 60
