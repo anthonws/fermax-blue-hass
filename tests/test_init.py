@@ -19,7 +19,6 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
-from homeassistant.requirements import RequirementsNotFound
 
 from custom_components.fermax_blue import (
     _async_options_updated,
@@ -40,7 +39,6 @@ from custom_components.fermax_blue.const import (
     CONF_FIREBASE_PACKAGE_NAME,
     CONF_FIREBASE_PROJECT_ID,
     CONF_FIREBASE_SENDER_ID,
-    CONF_FORCE_STREAMING_DEPS,
     CONF_RECORDING_RETENTION,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
@@ -48,8 +46,6 @@ from custom_components.fermax_blue.const import (
     FCM_WATCHDOG_INTERVAL,
     PLATFORMS,
     RECORDINGS_DIR,
-    STREAMING_FORCED_PACKAGES,
-    STREAMING_REQUIREMENTS,
     WEBRTC_TOKENS,
 )
 
@@ -135,7 +131,6 @@ async def _run_setup(mock_hass, entry, api, coordinators):
         patch(f"{MODULE}.FermaxBlueApi", return_value=api) as api_cls,
         patch(f"{MODULE}.FermaxBlueCoordinator", side_effect=list(coordinators)) as coord_cls,
         patch(f"{MODULE}.async_track_time_interval", return_value=MagicMock()) as track,
-        patch(f"{MODULE}.async_process_requirements", AsyncMock()),
     ):
         result = await async_setup_entry(mock_hass, entry)
     return result, api_cls, coord_cls, track
@@ -214,131 +209,35 @@ class TestMigration:
 
 
 class TestStreamingRequirements:
-    """Live-video deps are installed at setup, never required by the manifest."""
+    """Live video comes from the manifest; setup installs nothing itself."""
 
-    async def test_deps_installed_as_custom_requirements(self, mock_hass, entry, mock_api):
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock()) as install,
-            patch(f"{MODULE}.streaming_deps_available") as available,
-        ):
-            await _run_setup_with_install(mock_hass, entry, mock_api)
-
-        install.assert_awaited_once_with(
-            mock_hass, DOMAIN, list(STREAMING_REQUIREMENTS), is_built_in=False
-        )
-        available.cache_clear.assert_called_once()
-
-    async def test_unresolvable_deps_do_not_block_setup(self, mock_hass, entry, mock_api, caplog):
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        with patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)):
-            result = await _run_setup_with_install(mock_hass, entry, mock_api)
-
-        assert result is True
-        assert "Live video is unavailable" in caplog.text
-
-    async def test_unresolvable_deps_point_to_the_option(self, mock_hass, entry, mock_api, caplog):
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)),
-            patch(f"{MODULE}.asyncio.create_subprocess_exec") as spawn,
-        ):
-            await _run_setup_with_install(mock_hass, entry, mock_api)
-
-        spawn.assert_not_called()
-        assert CONF_FORCE_STREAMING_DEPS not in caplog.text  # the UI label, not the key
-        assert "integration options" in caplog.text
-
-    async def test_option_installs_pinned_deps_without_resolving(
-        self, mock_hass, entry, mock_api, caplog
-    ):
-        entry.options = {CONF_FORCE_STREAMING_DEPS: True}
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)),
-            patch(f"{MODULE}.pip_kwargs", return_value={"constraints": "c.txt"}),
-            patch(
-                f"{MODULE}.asyncio.create_subprocess_exec", AsyncMock(return_value=_proc(0))
-            ) as spawn,
-        ):
-            assert await _run_setup_with_install(mock_hass, entry, mock_api) is True
-
-        args = spawn.call_args.args
-        assert args[1:5] == ("-m", "uv", "pip", "install")
-        assert "--no-deps" in args
-        assert "--target" not in args
-        assert args[-len(STREAMING_FORCED_PACKAGES) :] == STREAMING_FORCED_PACKAGES
-        assert "without checking" in caplog.text
-
-    async def test_option_installs_into_the_deps_dir_ha_uses(self, mock_hass, entry, mock_api):
-        entry.options = {CONF_FORCE_STREAMING_DEPS: True}
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)),
-            patch(f"{MODULE}.pip_kwargs", return_value={"target": "/config/deps"}),
-            patch(
-                f"{MODULE}.asyncio.create_subprocess_exec", AsyncMock(return_value=_proc(0))
-            ) as spawn,
-        ):
-            await _run_setup_with_install(mock_hass, entry, mock_api)
-
-        args = spawn.call_args.args
-        assert args[args.index("--target") + 1] == "/config/deps"
-
-    async def test_failed_forced_install_logs_and_loads(self, mock_hass, entry, mock_api, caplog):
-        entry.options = {CONF_FORCE_STREAMING_DEPS: True}
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)),
-            patch(
-                f"{MODULE}.asyncio.create_subprocess_exec",
-                AsyncMock(return_value=_proc(1, b"no wheel for pylibsrtp")),
-            ),
-        ):
-            assert await _run_setup_with_install(mock_hass, entry, mock_api) is True
-
-        assert "no wheel for pylibsrtp" in caplog.text
-
-    async def test_hung_forced_install_is_killed(self, mock_hass, entry, mock_api, caplog):
-        entry.options = {CONF_FORCE_STREAMING_DEPS: True}
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        proc = _proc(0)
-        proc.communicate.side_effect = TimeoutError
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)),
-            patch(f"{MODULE}.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
-        ):
-            assert await _run_setup_with_install(mock_hass, entry, mock_api) is True
-
-        proc.kill.assert_called_once()
-        assert "timed out" in caplog.text
-
-    def test_manifest_does_not_require_them(self):
+    def test_manifest_pins_the_live_video_packages(self):
         manifest = json.loads(
             (
                 Path(__file__).parent.parent / "custom_components/fermax_blue/manifest.json"
             ).read_text()
         )
-        names = {req.split(">")[0].split("=")[0] for req in manifest["requirements"]}
-        assert not names & {"aiortc", "pymediasoup"}
+        assert {"pymediasoup-fermax==1.5.0.post1", "aiortc-fermax==1.15.0.post1"} <= set(
+            manifest["requirements"]
+        )
 
+    async def test_nothing_is_installed_behind_home_assistant(self, mock_hass, entry, mock_api):
+        entry.options = {"force_streaming_deps": True}  # left over from 0.22-0.24
+        with patch("asyncio.create_subprocess_exec") as spawn:
+            result, *_ = await _run_setup(mock_hass, entry, mock_api, [_make_coordinator()])
 
-def _proc(returncode, stderr=b""):
-    """Return a finished subprocess mock."""
-    proc = MagicMock()
-    proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(b"", stderr))
-    return proc
+        assert result is True
+        spawn.assert_not_called()
 
-
-async def _run_setup_with_install(mock_hass, entry, api):
-    """Run async_setup_entry leaving async_process_requirements to the caller's patch."""
-    with (
-        patch(f"{MODULE}.get_async_client", return_value=MagicMock()),
-        patch(f"{MODULE}.FermaxBlueApi", return_value=api),
-        patch(f"{MODULE}.FermaxBlueCoordinator", side_effect=[_make_coordinator()]),
-        patch(f"{MODULE}.async_track_time_interval", return_value=MagicMock()),
+    async def test_leftover_live_video_repair_is_cleared(
+        self, mock_hass, entry, mock_api, issue_registry
     ):
-        return await async_setup_entry(mock_hass, entry)
+        await _run_setup(mock_hass, entry, mock_api, [_make_coordinator()])
+
+        issue_registry.async_delete_issue.assert_called_once_with(
+            mock_hass, DOMAIN, "streaming_unavailable"
+        )
+        issue_registry.async_create_issue.assert_not_called()
 
 
 class TestSetupEntry:
@@ -722,24 +621,6 @@ class TestOptionsUpdated:
         assert coordinator._auto_response_file == "/media/greeting.mp3"
         mock_hass.config_entries.async_reload.assert_not_awaited()
 
-    async def test_forcing_streaming_deps_reloads_when_they_are_missing(self, mock_hass, entry):
-        entry.runtime_data = [_make_coordinator()]
-        entry.options = {CONF_FORCE_STREAMING_DEPS: True}
-
-        with patch(f"{MODULE}.streaming_deps_available", return_value=False):
-            await _async_options_updated(mock_hass, entry)
-
-        mock_hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
-
-    async def test_forcing_streaming_deps_already_installed_does_not_reload(self, mock_hass, entry):
-        entry.runtime_data = [_make_coordinator()]
-        entry.options = {CONF_FORCE_STREAMING_DEPS: True}
-
-        with patch(f"{MODULE}.streaming_deps_available", return_value=True):
-            await _async_options_updated(mock_hass, entry)
-
-        mock_hass.config_entries.async_reload.assert_not_awaited()
-
     async def test_scan_interval_change_triggers_reload(self, mock_hass, entry):
         coordinator = _make_coordinator()  # currently at DEFAULT_SCAN_INTERVAL minutes
         entry.runtime_data = [coordinator]
@@ -919,38 +800,6 @@ class TestDevices:
         mock_hass.config_entries.async_schedule_reload.assert_not_called()
 
 
-class TestRepairs:
-    """Live video being off is a repair, not just a log line."""
-
-    async def test_issue_raised_when_live_video_cannot_install(
-        self, mock_hass, entry, mock_api, issue_registry
-    ):
-        failure = RequirementsNotFound(DOMAIN, list(STREAMING_REQUIREMENTS))
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock(side_effect=failure)),
-            patch(f"{MODULE}.streaming_deps_available", return_value=False),
-        ):
-            await _run_setup_with_install(mock_hass, entry, mock_api)
-
-        issue_registry.async_create_issue.assert_called_once()
-        assert issue_registry.async_create_issue.call_args.args[2] == "streaming_unavailable"
-        issue_registry.async_delete_issue.assert_not_called()
-
-    async def test_issue_cleared_once_live_video_installs(
-        self, mock_hass, entry, mock_api, issue_registry
-    ):
-        with (
-            patch(f"{MODULE}.async_process_requirements", AsyncMock()),
-            patch(f"{MODULE}.streaming_deps_available", return_value=True),
-        ):
-            await _run_setup_with_install(mock_hass, entry, mock_api)
-
-        issue_registry.async_delete_issue.assert_called_once_with(
-            mock_hass, DOMAIN, "streaming_unavailable"
-        )
-        issue_registry.async_create_issue.assert_not_called()
-
-
 class TestModulePreload:
     """Modules imported inside coroutines are loaded once at setup, off the loop."""
 
@@ -966,7 +815,7 @@ class TestModulePreload:
         assert len(calls) == 1
         thread, names = calls[0]
         assert thread != loop_thread
-        assert "PIL.Image" in names
+        assert {"PIL.Image", "aiortc", "pymediasoup"} <= set(names)
 
     def test_missing_modules_are_skipped(self):
         from custom_components.fermax_blue import _import_modules
