@@ -821,15 +821,17 @@ class FermaxStreamSession:
         receive_only: bool = False,
         full_decode: Callable[[], bool] | None = None,
     ) -> None:
-        # Enforce secure scheme for signaling URL
-        if signaling_url and not signaling_url.startswith(("https://", "wss://")):
-            _LOGGER.warning(
-                "Signaling URL uses insecure scheme, upgrading to HTTPS: %s",
-                signaling_url,
-            )
-            signaling_url = signaling_url.replace("http://", "https://", 1).replace(
-                "ws://", "wss://", 1
-            )
+        # Enforce secure scheme for signaling URL. The client lowercases the
+        # scheme, so HTTP:// must be upgraded too or the token goes out in clear
+        scheme, sep, rest = signaling_url.partition("://")
+        secure = {"http": "https", "ws": "wss"}.get(scheme.lower(), scheme.lower())
+        if sep and secure != scheme:
+            if secure != scheme.lower():
+                _LOGGER.warning(
+                    "Signaling URL uses insecure scheme, upgrading to HTTPS: %s",
+                    signaling_url,
+                )
+            signaling_url = f"{secure}://{rest}"
         self._signaling = FermaxSignalingClient(
             signaling_url=signaling_url,
             oauth_token=oauth_token,

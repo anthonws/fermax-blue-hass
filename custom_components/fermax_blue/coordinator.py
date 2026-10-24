@@ -81,6 +81,9 @@ def _is_trusted_signaling_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
+        # Only schemes the session can upgrade to TLS
+        if parsed.scheme.lower() not in ("https", "wss", "http", "ws"):
+            return False
         return host.endswith(ALLOWED_SIGNALING_DOMAIN) or host == "fermax.io"
     except ValueError:
         return False

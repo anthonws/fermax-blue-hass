@@ -695,6 +695,19 @@ class TestSignalingUrlScheme:
 
         assert session._signaling._signaling_url == "wss://sig.example"
 
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("HTTP://sig.example", "https://sig.example"),
+            ("Ws://sig.example", "wss://sig.example"),
+            ("HTTPS://sig.example", "https://sig.example"),
+        ],
+    )
+    def test_scheme_case_does_not_bypass_the_upgrade(self, url, expected):
+        session = self._session(url)
+
+        assert session._signaling._signaling_url == expected
+
     def test_secure_url_untouched(self):
         session = self._session("wss://sig.example")
 

@@ -539,6 +539,8 @@ class TestSignalingUrlValidation:
             "https://notfermax.io",
             "https://fermax.io.evil.com",
             "https://evil-fermax.io",
+            "foo://signaling.fermax.io",
+            "file://signaling.fermax.io/etc",
             "",
             "not-a-url",
         ],
