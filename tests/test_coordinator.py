@@ -1474,6 +1474,7 @@ class TestStreamLifecycle:
         full_coordinator._save_last_photo = MagicMock(return_value=None)
         full_coordinator.hass.async_create_task = MagicMock()
         full_coordinator.async_update_listeners = MagicMock()
+        session.stop = AsyncMock()
         on_end = session_cls.call_args.kwargs["on_end"]
 
         on_end()
@@ -1483,12 +1484,30 @@ class TestStreamLifecycle:
         assert full_coordinator.stream_session is None
         assert full_coordinator.camera_active is False
         full_coordinator.async_set_updated_data.assert_called_once_with({})
+        preview_task, stop_task = (
+            c.args[0] for c in full_coordinator.hass.async_create_task.call_args_list
+        )
         # The badge is drawn by an entry task, off the callback
-        await full_coordinator.hass.async_create_task.call_args.args[0]
+        await preview_task
+        # A track that ended on its own still saves the recording and hangs up
+        await stop_task
+        session.stop.assert_awaited_once()
         # Overlay is a no-op on non-JPEG bytes, and the raw frame is persisted
         assert full_coordinator.last_photo == b"raw-frame"
         full_coordinator._save_last_photo.assert_called_once_with(b"raw-frame")
         full_coordinator.async_update_listeners.assert_called_once()
+
+    async def test_superseded_session_end_keeps_the_new_one(self, full_coordinator):
+        _, session_cls, _, _ = await self._start(full_coordinator)
+        on_end = session_cls.call_args.kwargs["on_end"]
+        newer = MagicMock()
+        full_coordinator._stream_session = newer
+        full_coordinator.hass.async_create_task = MagicMock()
+
+        on_end()
+
+        assert full_coordinator.stream_session is newer
+        full_coordinator.hass.async_create_task.assert_not_called()
 
 
 class TestAutoRespond:

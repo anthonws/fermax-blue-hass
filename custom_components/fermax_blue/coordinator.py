@@ -781,6 +781,9 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
 
         @callback
         def _on_stream_end() -> None:
+            # A superseded session must not release the one that replaced it
+            if self._stream_session is not session:
+                return
             # Cancel auto-stop timer if still pending
             if self._stream_stop_unsub:
                 self._stream_stop_unsub()
@@ -792,6 +795,10 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             self._stream_session = None
             self._camera_active = False
             self.async_set_updated_data(self.data)
+            # A track ending without a hang-up (network drop, grabber error)
+            # never reaches stop(): the recording would be lost and the
+            # signaling client and transports left open. stop() is idempotent
+            self._background(session.stop(), "stream end")
 
         media_root = self.hass.config.media_dirs.get("local", "/media")
         session = self._stream_session = FermaxStreamSession(
