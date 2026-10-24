@@ -175,6 +175,18 @@ class TestSignalingHangup:
 
         sio.emit.assert_not_awaited()
 
+    async def test_call_ended_by_server_is_not_hung_up_again(self):
+        """After end_up (e.g. a camera switch) a hang_up would end the next room."""
+        fake = FakeSioClient(responses={"join_call": _join_response()})
+        client = FermaxSignalingClient()
+        with _patched_sio(fake):
+            assert await client.connect("room1") is not None
+
+        await fake.handlers["end_up"]({"code": "end_up_server"})
+        await client.disconnect()
+
+        assert ("hang_up", {}) not in fake.emitted
+
 
 class TestPreviewFrames:
     """LIVE overlay rendering and the overlay-free preview frame."""
