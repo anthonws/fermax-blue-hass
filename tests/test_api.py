@@ -703,6 +703,23 @@ class TestCallLog:
         assert len(entries) == 0
 
     @pytest.mark.asyncio
+    async def test_get_call_log_skips_unreadable_dates(self, authenticated_api):
+        """A null or malformed callDate drops that entry, not the whole log."""
+        resp = _mock_response(
+            200,
+            json=[
+                {"id": "bad-null", "callDate": None},
+                {"id": "bad-text", "callDate": "yesterday"},
+                {"id": "ok", "deviceId": "d1", "callDate": "2026-10-24T10:00:00+00:00"},
+            ],
+        )
+
+        with patch("httpx.AsyncClient.get", return_value=resp):
+            entries = await authenticated_api.get_call_log("fcm_token")
+
+        assert [e.call_id for e in entries] == ["ok"]
+
+    @pytest.mark.asyncio
     async def test_get_call_log_error(self, authenticated_api):
         """Test call log fetch error returns empty list."""
         resp = _mock_response(500, text="error")

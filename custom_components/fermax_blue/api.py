@@ -544,13 +544,19 @@ class FermaxBlueApi:
 
         entries = []
         for item in response.json():
+            try:
+                call_date = datetime.fromisoformat(
+                    item.get("callDate", datetime.now(UTC).isoformat())
+                )
+            except (TypeError, ValueError):
+                # One unreadable entry must not cost the whole log
+                _LOGGER.debug("Skipping call log entry with bad date: %s", item.get("callDate"))
+                continue
             entries.append(
                 CallLogEntry(
                     call_id=item.get("id", ""),
                     device_id=item.get("deviceId", ""),
-                    call_date=datetime.fromisoformat(
-                        item.get("callDate", datetime.now(UTC).isoformat())
-                    ),
+                    call_date=call_date,
                     photo_id=item.get("photoId"),
                     answered=item.get("answered", False),
                 )
