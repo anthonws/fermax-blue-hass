@@ -1224,6 +1224,13 @@ class FermaxStreamSession:
         # 8. Initialize recording (frames collected in _grab_frames)
         await self._init_recording()
 
+        # The server can end the call (end_up) while the transports come up:
+        # stop() has already run, and going on would report a dead session as
+        # live until the local auto-stop
+        if self._stopping:
+            _LOGGER.info("Call ended while the stream was starting")
+            return False
+
         # 9. Start frame grabber + audio recorder
         self._active = True
         self._frame_task = asyncio.create_task(self._grab_frames())
