@@ -959,5 +959,17 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             self._stream_session = None
             self._camera_active = False
 
+    async def async_shutdown(self) -> None:
+        """Release the stream and push listener when the entry goes away.
+
+        HA also runs this when setup fails part-way, e.g. a later pairing's
+        first refresh raising ConfigEntryNotReady: listeners already started
+        would otherwise keep firing rings next to the ones the retry starts.
+        """
+        await super().async_shutdown()
+        await self.stop_stream()
+        if self.notification_listener:
+            await self.notification_listener.stop()
+
 
 type FermaxBlueConfigEntry = ConfigEntry[list[FermaxBlueCoordinator]]

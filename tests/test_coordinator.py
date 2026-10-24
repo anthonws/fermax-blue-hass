@@ -1840,3 +1840,32 @@ class TestWakeProgress:
         with patch("custom_components.fermax_blue.coordinator.WEBRTC_START_TIMEOUT", 0):
             await coordinator.ensure_stream()
         assert coordinator._wake[0] == "failed"
+
+
+class TestShutdown:
+    """HA runs async_shutdown on unload and, through the entry, after a failed setup."""
+
+    @pytest.fixture(autouse=True)
+    def base_shutdown(self):
+        with patch(
+            "homeassistant.helpers.update_coordinator.DataUpdateCoordinator.async_shutdown",
+            new_callable=AsyncMock,
+        ) as base:
+            yield base
+
+    async def test_releases_push_and_stream(self, full_coordinator, base_shutdown):
+        listener = MagicMock(stop=AsyncMock())
+        full_coordinator.notification_listener = listener
+        session = MagicMock(stop=AsyncMock(), latest_frame=None)
+        full_coordinator._stream_session = session
+
+        await full_coordinator.async_shutdown()
+
+        base_shutdown.assert_awaited_once()
+        listener.stop.assert_awaited_once()
+        session.stop.assert_awaited_once()
+        assert full_coordinator.stream_session is None
+
+    async def test_without_listener(self, full_coordinator):
+        full_coordinator.notification_listener = None
+        await full_coordinator.async_shutdown()
