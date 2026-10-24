@@ -561,6 +561,8 @@ class FermaxSignalingClient:
         self._connected = False
         self._room_join_result: RoomJoinResult | None = None
         self._on_end_up: Callable[[str], None] | None = None
+        # Set once the server ends the call (end_up)
+        self._ended_by_server = False
 
     @property
     def is_connected(self) -> bool:
@@ -586,6 +588,7 @@ class FermaxSignalingClient:
         async def on_end_up(data: Any) -> None:
             code = data.get("code", "") if isinstance(data, dict) else str(data)
             _LOGGER.info("Call ended: %s", code)
+            self._ended_by_server = True
             if self._on_end_up:
                 self._on_end_up(code)
 
@@ -766,7 +769,10 @@ class FermaxSignalingClient:
             try:
                 # A session that never picked up leaves silently: hang_up on a
                 # still-ringing call could end it for the visitor and monitor.
-                if self._connected and self._send_hangup:
+                # Nor is a call the server already ended hung up again: a camera
+                # switch ends the room but not the call, and the hang_up would
+                # end the room the panel opens for the other camera.
+                if self._connected and self._send_hangup and not self._ended_by_server:
                     await self.hangup()
                 await self._sio.disconnect()
             except Exception:
