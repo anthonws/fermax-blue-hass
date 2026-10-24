@@ -10,7 +10,7 @@ import time
 from collections import deque
 from collections.abc import Coroutine
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -21,6 +21,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import (
     CallLogEntry,
@@ -147,6 +148,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._call_mode = CALL_MODE_NOTIFY
         self._stream_duration = DEFAULT_STREAM_DURATION
         self._stream_stop_unsub: CALLBACK_TYPE | None = None
+        # (start, expected end) of the current session, for a countdown
+        self._stream_window: tuple[datetime, datetime] | None = None
         self._conversation_timeout = DEFAULT_CONVERSATION_TIMEOUT
         # Gates the go2rtc signaling endpoint for this intercom (see webrtc_bridge)
         self.webrtc_token = secrets.token_urlsafe(16)
@@ -201,8 +204,12 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         return self._last_photo
 
     @staticmethod
-    def _overlay_snapshot_indicator(jpeg: bytes | None) -> bytes | None:
-        """Burn a blue "SNAPSHOT HH:MM:SS" badge into a preview photo.
+    def _overlay_snapshot_indicator(
+        jpeg: bytes | None, taken: datetime | None = None
+    ) -> bytes | None:
+        """Burn a blue "SNAPSHOT <date> <time>" badge into a preview photo.
+
+        ``taken`` dates the photo; without it the badge shows the current time.
 
         Counterpart of the red LIVE badge in streaming.py - it lets the user
         tell a frozen still preview apart from a live stream. Recordings and
@@ -213,19 +220,18 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             return jpeg
         try:
             import io
-            from datetime import datetime
 
             from PIL import Image, ImageDraw, ImageFont
 
             img = Image.open(io.BytesIO(jpeg)).convert("RGB")
             draw = ImageDraw.Draw(img)
-            now = datetime.now().strftime("%H:%M:%S")
+            stamp = dt_util.as_local(taken or dt_util.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
             font = ImageFont.load_default(size=16)
 
             # Blue "SNAPSHOT" badge top-left (the LIVE badge is red); the dot
             # is drawn as an ellipse because the default PIL font has no glyph
             # for U+25CF, and the badge width is sized to the rendered text
-            text = f"SNAPSHOT {now}"
+            text = f"SNAPSHOT {stamp}"
             text_w = draw.textlength(text, font=font)
             draw.rectangle([(6, 6), (26 + text_w + 8, 28)], fill=(20, 80, 180))
             draw.ellipse([(12, 12), (22, 22)], fill=(255, 255, 255))
@@ -280,14 +286,19 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         path = self._last_frame_path()
         if path:
 
-            def _read() -> bytes | None:
+            def _read() -> tuple[bytes, float] | None:
                 if path.exists():
-                    return path.read_bytes()
+                    return path.read_bytes(), path.stat().st_mtime
                 return None
 
-            photo = await asyncio.to_thread(_read)
-            if photo:
-                self._last_photo = photo
+            found = await asyncio.to_thread(_read)
+            if found:
+                photo, mtime = found
+                # The file is kept unbadged; stamp it with when it was taken,
+                # not with the restart time
+                self._last_photo = await asyncio.to_thread(
+                    self._overlay_snapshot_indicator, photo, dt_util.utc_from_timestamp(mtime)
+                )
                 _LOGGER.info("Loaded persisted camera frame (%d bytes)", len(photo))
 
     @property
@@ -720,6 +731,11 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         return self._stream_session is not None
 
     @property
+    def stream_window(self) -> tuple[datetime, datetime] | None:
+        """(start, expected end) of the live session, or None."""
+        return self._stream_window if self.has_active_stream else None
+
+    @property
     def has_active_stream(self) -> bool:
         """Whether a live video session is up right now."""
         return bool(self._stream_session and self._stream_session.is_active)
@@ -820,6 +836,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         conversation_timeout: str | int | None = None,
     ) -> None:
         """Start a video stream session for the given room."""
+        # The server counts the preview from the push, which is now
+        received = dt_util.utcnow()
         self._conversation_timeout = _positive_int(
             conversation_timeout, DEFAULT_CONVERSATION_TIMEOUT
         )
@@ -847,6 +865,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 raw = self._stream_session.latest_frame_raw
                 self._background(self._keep_preview(raw, notify=True), "stream preview")
             self._stream_session = None
+            self._stream_window = None
             self._camera_active = False
             self.async_set_updated_data(self.data)
             # A track ending without a hang-up (network drop, grabber error)
@@ -872,31 +891,39 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             return
         self._set_wake(None if success else "failed")
         if success:
-            self._camera_active = True
-            _LOGGER.info("Video stream started for room %s", room_id)
-            self.async_set_updated_data(self.data)
-            async_dispatcher_send(self.hass, SIGNAL_CAMERA_ON.format(self.pairing.device_id))
-
             # Schedule auto-stop after configured duration. Receive-only
             # sessions are torn down server-side after PreviewTimeout
             # (carried in the push payload, 29 s by default), so clamp the
             # local timer to it: a longer stream_duration would leave the
-            # entities reporting a live stream after teardown.
+            # entities reporting a live stream after teardown. Armed before
+            # the state goes out, so the entities publish the session window.
             stop_after = self._stream_duration
             if receive_only:
                 stop_after = min(
                     stop_after, _positive_int(preview_timeout, DEFAULT_PREVIEW_TIMEOUT)
                 )
-            self._schedule_stream_stop(stop_after)
+            self._schedule_stream_stop(stop_after, since=received)
+
+            self._camera_active = True
+            _LOGGER.info("Video stream started for room %s", room_id)
+            self.async_set_updated_data(self.data)
+            async_dispatcher_send(self.hass, SIGNAL_CAMERA_ON.format(self.pairing.device_id))
         else:
             _LOGGER.warning("Failed to start video stream for room %s", room_id)
             self._stream_session = None
 
     @callback
-    def _schedule_stream_stop(self, seconds: int) -> None:
-        """(Re)arm the local auto-stop timer of the current stream."""
+    def _schedule_stream_stop(self, seconds: int, since: datetime | None = None) -> None:
+        """(Re)arm the local auto-stop timer of the current stream.
+
+        ``since`` is when the session's clock started (the push); without it the
+        window keeps its start and ends ``seconds`` from now.
+        """
         if self._stream_stop_unsub:
             self._stream_stop_unsub()
+        now = dt_util.utcnow()
+        start = since or (self._stream_window[0] if self._stream_window else now)
+        self._stream_window = (start, (since or now) + timedelta(seconds=seconds))
 
         @callback
         def _auto_stop_stream(_now: Any) -> None:
@@ -920,6 +947,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         if not session.picked_up and not await session.pickup():
             return False
         self._schedule_stream_stop(max(self._stream_duration, self._conversation_timeout))
+        # The countdown follows the longer conversation window
+        self.async_update_listeners()
         return True
 
     async def ensure_stream(self) -> FermaxStreamSession | None:
@@ -965,6 +994,7 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 await self._keep_preview(self._stream_session.latest_frame_raw)
             await self._stream_session.stop()
             self._stream_session = None
+            self._stream_window = None
             self._camera_active = False
 
     async def async_shutdown(self) -> None:
