@@ -254,6 +254,8 @@ class WebRtcPeer:
         self._mic_track: Any = None
         self._mic_ready = False
         self._mic_routed = False
+        # The viewer's microphone feeds a session (they are talking)
+        self._talking = False
         self._tasks: list[asyncio.Task] = []
         self._closed = False
 
@@ -338,11 +340,16 @@ class WebRtcPeer:
             next_session = await self._next_session(session)
             if next_session is None:
                 return
-            # A later ring or preview is watched, never answered: an open
-            # microphone must not pick up a call nobody chose to take
-            self._mic_routed = True
             session = next_session
             self._attach(session)
+            if session.picked_up and self._talking:
+                # A camera switch inside the conversation: the other camera's
+                # room was answered on arrival, so keep talking into it
+                session.set_audio_source(self._mic_track)
+            else:
+                # A later ring or preview is watched, never answered: an open
+                # microphone must not pick up a call nobody chose to take
+                self._mic_routed = True
 
     def _attach(self, session: FermaxStreamSession) -> None:
         """Switch the tracks to a live session."""
@@ -383,6 +390,7 @@ class WebRtcPeer:
             return
         _LOGGER.info("Viewer microphone connected to the intercom")
         self._session.set_audio_source(self._mic_track)
+        self._talking = True
 
     async def close(self) -> None:
         """Release tracks and the peer connection (idempotent)."""

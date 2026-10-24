@@ -125,6 +125,7 @@ def coordinator(mock_hass, mock_api, pairing):
         coord.notification_listener = None
         coord._stream_session = None
         coord._stream_window = None
+        coord._switch_in_conversation = False
         coord._last_photo = None
         coord._last_photo_id = None
         coord._doorbell_ringing = False
@@ -295,6 +296,8 @@ class TestRingPreview:
             receive_only=True,
             preview_timeout="29",
             conversation_timeout="90",
+            in_conversation=False,
+            global_timeout=None,
         )
 
     def test_no_stream_in_notify_mode_by_default(self, coordinator):
@@ -1934,3 +1937,88 @@ class TestShutdown:
     async def test_without_listener(self, full_coordinator):
         full_coordinator.notification_listener = None
         await full_coordinator.async_shutdown()
+
+
+class TestSwitchInConversation:
+    """A camera switch keeps an answered call answered, as in the app."""
+
+    def _switch_push(self, coordinator, global_timeout="81"):
+        coordinator._start_stream = MagicMock()
+        with patch("custom_components.fermax_blue.coordinator.async_dispatcher_send"):
+            coordinator._handle_notification(
+                {
+                    "data": {
+                        "FermaxNotificationType": "ChangeVideoSource",
+                        "RoomId": "room_switched",
+                        "SocketUrl": "https://signaling-pro-duoxme.fermax.io",
+                        "FermaxToken": "ftok",
+                        "PreviewTimeout": "30",
+                        "ConversationTimeout": "90",
+                        "GlobalTimeout": global_timeout,
+                    }
+                },
+                persistent_id=f"cvs-{global_timeout}",
+            )
+        for call in coordinator.hass.async_create_task.call_args_list:
+            call.args[0].close()  # the push ack and the stream start, not run here
+        return coordinator._start_stream.call_args.kwargs
+
+    async def _request_switch(self, coordinator, mock_api, picked_up):
+        listener = MagicMock()
+        listener.fcm_token = "tok"
+        coordinator.notification_listener = listener
+        coordinator._stream_session = MagicMock(is_active=True, picked_up=picked_up, _room_id="r")
+        mock_api.change_video_source_incall = AsyncMock(return_value=MagicMock())
+        await coordinator.change_video_source()
+
+    async def test_answered_call_stays_answered_on_the_other_camera(
+        self, full_coordinator, mock_api
+    ):
+        full_coordinator.hass.async_create_task = MagicMock()
+        await self._request_switch(full_coordinator, mock_api, picked_up=True)
+
+        kwargs = self._switch_push(full_coordinator)
+
+        assert kwargs["receive_only"] is False
+        assert kwargs["in_conversation"] is True
+        assert kwargs["global_timeout"] == "81"
+        assert full_coordinator._switch_in_conversation is False  # used once
+
+    async def test_preview_switch_stays_a_preview(self, full_coordinator, mock_api):
+        full_coordinator.hass.async_create_task = MagicMock()
+        await self._request_switch(full_coordinator, mock_api, picked_up=False)
+
+        kwargs = self._switch_push(full_coordinator)
+
+        assert kwargs["receive_only"] is True
+        assert kwargs["in_conversation"] is False
+
+    async def test_conversation_room_runs_on_the_call_time_left(self, full_coordinator):
+        listener = MagicMock()
+        listener.fcm_token = "tok"
+        full_coordinator.notification_listener = listener
+        full_coordinator._stream_duration = 30
+        session = MagicMock()
+        session.start = AsyncMock(return_value=True)
+        with (
+            patch(
+                "custom_components.fermax_blue.coordinator.FermaxStreamSession",
+                return_value=session,
+            ),
+            patch("custom_components.fermax_blue.coordinator.async_dispatcher_send"),
+            patch("custom_components.fermax_blue.coordinator.async_call_later") as call_later,
+        ):
+            await full_coordinator._start_stream(
+                "room_switched",
+                "https://signaling-pro-duoxme.fermax.io",
+                "ftok",
+                receive_only=False,
+                conversation_timeout="90",
+                in_conversation=True,
+                global_timeout="81",
+            )
+
+        # The conversation (90 s) within what is left of the call (81 s)
+        assert call_later.call_args.args[1] == 81
+        start, end = full_coordinator.stream_window
+        assert (end - start).total_seconds() == 81

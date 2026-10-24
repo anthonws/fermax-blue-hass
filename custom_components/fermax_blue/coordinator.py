@@ -150,6 +150,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         self._stream_stop_unsub: CALLBACK_TYPE | None = None
         # (start, expected end) of the current session, for a countdown
         self._stream_window: tuple[datetime, datetime] | None = None
+        # A camera switch was requested while the call was answered
+        self._switch_in_conversation = False
         self._conversation_timeout = DEFAULT_CONVERSATION_TIMEOUT
         # Gates the go2rtc signaling endpoint for this intercom (see webrtc_bridge)
         self.webrtc_token = secrets.token_urlsafe(16)
@@ -559,7 +561,14 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             # view: the viewer's first microphone packet answers it. Answering
             # every preview at once made the panel drop later sessions within
             # two seconds of the pickup, with no video sent.
-            receive_only = not attend
+            # A camera switch inside an answered call stays answered: the
+            # conversation carries over to the other camera, as in the app.
+            in_conversation = (
+                notification_type == "ChangeVideoSource" and self._switch_in_conversation
+            )
+            if notification_type == "ChangeVideoSource":
+                self._switch_in_conversation = False
+            receive_only = not (attend or in_conversation)
             self._background(
                 self._start_stream(
                     room_id,
@@ -568,6 +577,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                     receive_only=receive_only,
                     preview_timeout=data.get("PreviewTimeout"),
                     conversation_timeout=data.get("ConversationTimeout"),
+                    in_conversation=in_conversation,
+                    global_timeout=data.get("GlobalTimeout"),
                 ),
                 "stream start",
             )
@@ -778,6 +789,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         """
         context = self._incall_context()
         if context:
+            session = self._stream_session
+            self._switch_in_conversation = bool(session and session.picked_up)
             result = await self.api.change_video_source_incall(
                 device_id=self.pairing.device_id, **context
             )
@@ -834,8 +847,15 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         receive_only: bool = False,
         preview_timeout: str | int | None = None,
         conversation_timeout: str | int | None = None,
+        in_conversation: bool = False,
+        global_timeout: str | int | None = None,
     ) -> None:
-        """Start a video stream session for the given room."""
+        """Start a video stream session for the given room.
+
+        ``in_conversation`` marks a room that continues an answered call (a
+        camera switch): it runs on the conversation time, within what is left
+        of the call (``global_timeout``).
+        """
         # The server counts the preview from the push, which is now
         received = dt_util.utcnow()
         self._conversation_timeout = _positive_int(
@@ -902,6 +922,9 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 stop_after = min(
                     stop_after, _positive_int(preview_timeout, DEFAULT_PREVIEW_TIMEOUT)
                 )
+            elif in_conversation:
+                stop_after = max(stop_after, self._conversation_timeout)
+                stop_after = min(stop_after, _positive_int(global_timeout, stop_after))
             self._schedule_stream_stop(stop_after, since=received)
 
             self._camera_active = True

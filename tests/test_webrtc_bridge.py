@@ -388,6 +388,42 @@ class TestSessionAttachment:
         coordinator.pickup.assert_not_awaited()  # an open microphone never answers a later ring
         await peer.close()
 
+    async def test_talking_continues_into_a_switched_room(self):
+        # A camera switch inside the conversation: the new room is answered on
+        # arrival and the viewer keeps talking into it
+        first = _session()
+        peer, coordinator = await self._attached(first)
+        mic = MagicMock(kind="audio")
+        peer._mic_track = mic
+        peer._mic_ready = True
+        peer._mic_routed = True
+        peer._talking = True
+        second = _session()
+        second.picked_up = True
+        first.is_active = False
+        coordinator.stream_session = second
+        with patch.object(webrtc_bridge, "SESSION_POLL_SECONDS", 0):
+            for _ in range(6):
+                await asyncio.sleep(0)
+        assert peer._session is second
+        second.set_audio_source.assert_called_once_with(mic)
+        await peer.close()
+
+    async def test_a_watching_viewer_never_talks_into_an_answered_room(self):
+        first = _session()
+        peer, coordinator = await self._attached(first)
+        peer._mic_track = MagicMock(kind="audio")
+        second = _session()
+        second.picked_up = True
+        first.is_active = False
+        coordinator.stream_session = second
+        with patch.object(webrtc_bridge, "SESSION_POLL_SECONDS", 0):
+            for _ in range(6):
+                await asyncio.sleep(0)
+        assert peer._session is second
+        second.set_audio_source.assert_not_called()
+        await peer.close()
+
 
 class TestMicrophone:
     """The viewer microphone answers the call and reaches the panel."""
