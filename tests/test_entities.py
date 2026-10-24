@@ -1457,6 +1457,22 @@ class TestCameraBehavior:
 
         return FermaxCamera(mock_coordinator)
 
+    def test_countdown_attributes_while_live(self, mock_coordinator):
+        from datetime import UTC, datetime, timedelta
+
+        start = datetime(2026, 10, 24, 23, 4, 31, tzinfo=UTC)
+        mock_coordinator.stream_window = (start, start + timedelta(seconds=19))
+        attrs = self._make(mock_coordinator).extra_state_attributes
+
+        assert attrs == {
+            "stream_started_at": "2026-10-24T23:04:31+00:00",
+            "stream_ends_at": "2026-10-24T23:04:50+00:00",
+        }
+
+    def test_no_countdown_attributes_when_idle(self, mock_coordinator):
+        mock_coordinator.stream_window = None
+        assert self._make(mock_coordinator).extra_state_attributes is None
+
     def test_available_when_last_photo_exists(self, mock_coordinator):
         mock_coordinator.last_photo = b"JPEG"
         mock_coordinator.stream_session = None

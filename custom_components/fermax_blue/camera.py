@@ -201,6 +201,17 @@ class FermaxCamera(FermaxBlueEntity, Camera):
         await self.coordinator.stop_stream()
 
     @property
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        """When the live session started and when it ends, for a countdown card."""
+        window = self.coordinator.stream_window
+        if window is None:
+            return None
+        return {
+            "stream_started_at": window[0].isoformat(),
+            "stream_ends_at": window[1].isoformat(),
+        }
+
+    @property
     def is_streaming(self) -> bool:
         """Return True if live video stream is active."""
         stream = self.coordinator.stream_session

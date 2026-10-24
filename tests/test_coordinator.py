@@ -123,6 +123,7 @@ def coordinator(mock_hass, mock_api, pairing):
         coord.device_info = None
         coord.notification_listener = None
         coord._stream_session = None
+        coord._stream_window = None
         coord._last_photo = None
         coord._last_photo_id = None
         coord._doorbell_ringing = False
@@ -578,6 +579,24 @@ class TestSnapshotOverlay:
     def test_none_passthrough(self):
         assert FermaxBlueCoordinator._overlay_snapshot_indicator(None) is None
 
+    def test_badge_dates_the_photo(self):
+        from datetime import UTC
+
+        from PIL import ImageDraw
+
+        texts = []
+        original = ImageDraw.ImageDraw.text
+
+        def _record(draw, xy, text, *args, **kwargs):
+            texts.append(text)
+            return original(draw, xy, text, *args, **kwargs)
+
+        taken = datetime(2026, 10, 24, 21, 41, 7, tzinfo=UTC)
+        with patch.object(ImageDraw.ImageDraw, "text", _record):
+            FermaxBlueCoordinator._overlay_snapshot_indicator(self._jpeg(), taken)
+
+        assert texts == ["SNAPSHOT 2026-10-24 21:41:07"]
+
     def test_invalid_jpeg_returned_unchanged(self):
         data = b"not a jpeg"
         assert FermaxBlueCoordinator._overlay_snapshot_indicator(data) == data
@@ -723,6 +742,26 @@ class TestPhotoPersistence:
         full_coordinator._storage_path = tmp_path
         await full_coordinator._load_last_photo()
         assert full_coordinator.last_photo is None
+
+    async def test_loaded_photo_is_badged_with_its_own_time(self, full_coordinator, tmp_path):
+        """After a restart the preview shows when it was taken, not the restart time."""
+        import os
+
+        full_coordinator._storage_path = tmp_path
+        frame = tmp_path / "last_frame_dev1.jpg"
+        frame.write_bytes(b"persisted-frame")
+        os.utime(frame, (1792877000, 1792877000))
+
+        with patch.object(
+            FermaxBlueCoordinator, "_overlay_snapshot_indicator", return_value=b"badged"
+        ) as overlay:
+            await full_coordinator._load_last_photo()
+
+        assert full_coordinator.last_photo == b"badged"
+        raw, taken = overlay.call_args.args
+        assert raw == b"persisted-frame"
+        assert taken.timestamp() == 1792877000
+        assert frame.read_bytes() == b"persisted-frame"  # the file stays unbadged
 
     async def test_save_call_photo_writes_to_recordings_dir(self, full_coordinator, tmp_path):
         full_coordinator.hass.config.media_dirs = {"local": str(tmp_path)}
@@ -1356,6 +1395,17 @@ class TestStreamLifecycle:
             )
         return session, session_cls, dispatch, call_later
 
+    async def test_preview_window_counts_from_the_push(self, full_coordinator):
+        """A switched room inherits what is left of the preview: the window shows it."""
+        await self._start(full_coordinator, receive_only=True, preview_timeout="19")
+
+        start, end = full_coordinator.stream_window
+        assert (end - start).total_seconds() == 19
+
+    async def test_no_window_without_a_live_session(self, full_coordinator):
+        await self._start(full_coordinator, start_ok=False)
+        assert full_coordinator.stream_window is None
+
     async def test_superseded_start_keeps_the_new_session(self, full_coordinator):
         """A push that replaces a session mid-start must not be undone by its failure (#98)."""
         listener = MagicMock()
@@ -1546,6 +1596,15 @@ class TestPickup:
     async def test_no_session(self, coordinator):
         coordinator._stream_session = None
         assert await coordinator.pickup() is False
+
+    async def test_answer_extends_the_countdown(self, coordinator):
+        self._live(coordinator)
+        with patch("custom_components.fermax_blue.coordinator.async_call_later"):
+            assert await coordinator.pickup() is True
+
+        start, end = coordinator.stream_window
+        assert 89 <= (end - start).total_seconds() <= 91
+        coordinator.async_update_listeners.assert_called()
 
     async def test_inactive_session(self, coordinator):
         session = self._live(coordinator)
