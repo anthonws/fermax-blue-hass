@@ -832,6 +832,24 @@ def _pickup_session(tmp_path):
 class TestPickupFlow:
     """produce → pickup → remote audio consume wiring (APK call-answer sequence)."""
 
+    async def test_transports_skip_the_default_stun_server(self, tmp_path):
+        """No ICE servers: aiortc's default STUN costs up to 5 s per transport."""
+        env = _pickup_session(tmp_path)
+
+        with contextlib.ExitStack() as stack:
+            for p in env.patches:
+                stack.enter_context(p)
+            assert await env.session.start() is True
+
+        device = env.session._device
+        calls = [
+            *device.createRecvTransport.call_args_list,
+            *device.createSendTransport.call_args_list,
+        ]
+        assert len(calls) == 3
+        assert all(c.kwargs["iceServers"] == [] for c in calls)
+        await env.session.stop()
+
     async def test_pickup_creates_audio_consumer_and_stop_cleans_up(self, tmp_path):
         env = _pickup_session(tmp_path)
 

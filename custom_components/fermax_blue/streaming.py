@@ -77,6 +77,12 @@ DATAGRAMS_PER_WAKEUP = 64
 # Longest hole in a live source that is filled with silence (samples at AUDIO_RATE);
 # beyond it the timeline is re-anchored instead of bursting silence
 MAX_GAP_FILL = 2 * AUDIO_RATE
+# ICE servers for the mediasoup transports. Without any, aiortc falls back to
+# Google's STUN server and aioice waits up to 5 s for it on every transport
+# (video, send, then audio after pickup) whenever it answers slowly or not at
+# all. The SFU is ICE-lite on public addresses, so our host candidates reach it
+# without a server-reflexive one.
+NO_ICE_SERVERS: list[Any] = []
 DEFAULT_SIGNALING_URL = "https://signaling-pro-duoxme.fermax.io"
 
 
@@ -1070,6 +1076,7 @@ class FermaxStreamSession:
             iceParameters=IceParameters(**ice_params),
             iceCandidates=[IceCandidate(**c) for c in ice_candidates],
             dtlsParameters=DtlsParameters(**dtls_params),
+            iceServers=NO_ICE_SERVERS,
         )
 
         # Handle transport connect callback
@@ -1123,6 +1130,7 @@ class FermaxStreamSession:
                 iceParameters=IceParameters(**audio_ice),
                 iceCandidates=[IceCandidate(**c) for c in audio_candidates],
                 dtlsParameters=DtlsParameters(**audio_dtls),
+                iceServers=NO_ICE_SERVERS,
             )
 
             @self._recv_audio_transport.on("connect")
@@ -1145,6 +1153,7 @@ class FermaxStreamSession:
             iceCandidates=[IceCandidate(**c) for c in send_candidates],
             dtlsParameters=DtlsParameters(**send_dtls),
             sctpParameters=None,
+            iceServers=NO_ICE_SERVERS,
         )
 
         @self._send_transport.on("connect")
