@@ -29,6 +29,7 @@ from .api import (
     FermaxApiError,
     FermaxAuthError,
     FermaxBlueApi,
+    FermaxBusyError,
     OpeningRecord,
     Pairing,
 )
@@ -64,7 +65,17 @@ NOTIFICATION_GRACE_PERIOD = 10
 WAKE_STAGES = {"request": (2, 30), "accepted": (30, 60), "joining": (60, 95)}
 WAKE_CREEP_SECONDS = 4.0
 WAKE_FAILED_SHOWN_SECONDS = 10
+# An intercom answering 409 is starting or ending a session: wait this long
+# for its push before each new auto-on, instead of giving up on the first one
+WAKE_BUSY_BACKOFF = (2, 5, 10)
 ALLOWED_SIGNALING_DOMAIN = ".fermax.io"
+
+
+def _joined_preview(description: str) -> DivertResponse:
+    """A preview request answered by a wake-up or session already under way."""
+    return DivertResponse(
+        reason="joined", divert_service="", code=0, description=description, directed_to=""
+    )
 
 
 def _positive_int(value: str | int | None, default: int) -> int:
@@ -624,16 +635,42 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         return success
 
     async def start_camera_preview(self) -> DivertResponse | None:
-        """Start camera preview (auto-on) to view the intercom camera."""
+        """Start camera preview (auto-on) to view the intercom camera.
+
+        The button, the camera's turn_on and a WebRTC viewer share one wake-up:
+        a second auto-on while the first is pending answers 409.
+        """
+        if self._wake_lock.locked() or self._stream_session is not None:
+            _LOGGER.debug("Camera preview requested while one is already starting or live")
+            return _joined_preview("a wake-up is already in progress")
+        async with self._wake_lock:
+            return await self._request_preview()
+
+    async def _request_preview(self) -> DivertResponse | None:
+        """Send auto-on, retrying while the intercom answers busy. Hold _wake_lock."""
         if not self.notification_listener or not self.notification_listener.fcm_token:
             _LOGGER.error("Cannot start camera: no FCM token available")
             return None
 
         self._set_wake("request")
-        result = await self.api.auto_on(
-            self.pairing.device_id,
-            self.notification_listener.fcm_token,
-        )
+        result: DivertResponse | None = None
+        for attempt, delay in enumerate((*WAKE_BUSY_BACKOFF, None)):
+            try:
+                result = await self.api.auto_on(
+                    self.pairing.device_id,
+                    self.notification_listener.fcm_token,
+                )
+                break
+            except FermaxBusyError:
+                if delay is None:
+                    _LOGGER.warning("Intercom still busy after %d wake-up attempts", attempt + 1)
+                    break
+            # A busy intercom often announces the session it is starting: join
+            # that one rather than asking again
+            if await self._wait_for_session(delay):
+                _LOGGER.info("Intercom was busy; joining the session it started")
+                return _joined_preview("joined the session the intercom started")
+            _LOGGER.info("Intercom busy; retrying the wake-up (attempt %d)", attempt + 2)
         # The push may already have started the session while auto-on answered
         if self._wake and self._wake[0] == "request":
             self._set_wake("accepted" if result else "failed")
@@ -664,6 +701,15 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             self.async_set_updated_data(self.data)
 
         return result
+
+    async def _wait_for_session(self, seconds: float) -> bool:
+        """Return True once a push starts a session within the given time."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self._stream_session is not None:
+                return True
+            await asyncio.sleep(0.1)
+        return self._stream_session is not None
 
     @property
     def has_active_stream(self) -> bool:
@@ -869,7 +915,11 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
             if self.has_active_stream:
                 return self._stream_session
             # _camera_active is set by a preview request whose push has not landed yet
-            if not self._camera_active and not await self.start_camera_preview():
+            if (
+                not self._camera_active
+                and self._stream_session is None
+                and not await self._request_preview()
+            ):
                 return None
             deadline = time.monotonic() + WEBRTC_START_TIMEOUT
             while time.monotonic() < deadline:

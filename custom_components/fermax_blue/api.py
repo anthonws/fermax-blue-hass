@@ -178,6 +178,10 @@ class FermaxApiError(Exception):
     """Generic API error."""
 
 
+class FermaxBusyError(FermaxApiError):
+    """The intercom refused a wake-up (409): a session is starting or ending."""
+
+
 class FermaxBlueApi:
     """Client for the Fermax Blue API."""
 
@@ -590,7 +594,12 @@ class FermaxBlueApi:
                 json=payload,
             )
         except httpx.HTTPStatusError as exc:
-            _LOGGER.error("autoOn failed: %s", exc)
+            # The body is the only hint of why the intercom refused
+            body = exc.response.text[:300]
+            if exc.response.status_code == 409:
+                _LOGGER.warning("autoOn refused, intercom busy (409): %s", body)
+                raise FermaxBusyError(body) from exc
+            _LOGGER.error("autoOn failed: %s (%s)", exc, body)
             return None
         except httpx.TimeoutException as exc:
             if not _may_have_landed(exc):

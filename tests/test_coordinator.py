@@ -18,6 +18,7 @@ from custom_components.fermax_blue.api import (
     FermaxApiError,
     FermaxAuthError,
     FermaxBlueApi,
+    FermaxBusyError,
     OpeningRecord,
     Pairing,
 )
@@ -1295,6 +1296,71 @@ class TestCameraPreviewLifecycle:
         assert full_coordinator.camera_active is False
 
 
+class TestBusyIntercom:
+    """An auto-on answered 409 is retried with backoff, or joins the session under way."""
+
+    @pytest.fixture
+    def busy_coordinator(self, full_coordinator):
+        listener = MagicMock()
+        listener.fcm_token = "tok"
+        full_coordinator.notification_listener = listener
+        full_coordinator.async_set_updated_data = MagicMock()
+        full_coordinator.data = {}
+        return full_coordinator
+
+    def _no_wait(self):
+        return patch("custom_components.fermax_blue.coordinator.WAKE_BUSY_BACKOFF", (0, 0, 0))
+
+    async def test_retries_until_the_intercom_accepts(self, busy_coordinator, mock_api):
+        divert = MagicMock()
+        mock_api.auto_on = AsyncMock(side_effect=[FermaxBusyError("{}"), divert])
+        with self._no_wait(), patch("custom_components.fermax_blue.coordinator.async_call_later"):
+            assert await busy_coordinator.start_camera_preview() is divert
+        assert mock_api.auto_on.await_count == 2
+        assert busy_coordinator.camera_active is True
+
+    async def test_gives_up_after_the_backoff(self, busy_coordinator, mock_api):
+        mock_api.auto_on = AsyncMock(side_effect=FermaxBusyError("{}"))
+        with self._no_wait():
+            assert await busy_coordinator.start_camera_preview() is None
+        assert mock_api.auto_on.await_count == 4
+        assert busy_coordinator._wake[0] == "failed"
+
+    async def test_joins_the_session_a_busy_intercom_starts(self, busy_coordinator, mock_api):
+        async def _busy(*_args):
+            # The intercom's own push lands while it refuses the second wake-up
+            busy_coordinator._stream_session = MagicMock(is_active=False)
+            raise FermaxBusyError("{}")
+
+        mock_api.auto_on = AsyncMock(side_effect=_busy)
+        result = await busy_coordinator.start_camera_preview()
+        assert result is not None
+        assert result.reason == "joined"
+        mock_api.auto_on.assert_awaited_once()
+
+    async def test_button_during_a_viewer_wake_sends_no_second_auto_on(
+        self, busy_coordinator, mock_api
+    ):
+        release = asyncio.Event()
+
+        async def _slow(*_args):
+            await release.wait()
+            return MagicMock()
+
+        mock_api.auto_on = AsyncMock(side_effect=_slow)
+        with (
+            patch("custom_components.fermax_blue.coordinator.async_call_later"),
+            patch("custom_components.fermax_blue.coordinator.WEBRTC_START_TIMEOUT", 0),
+        ):
+            viewer = asyncio.create_task(busy_coordinator.ensure_stream())
+            await asyncio.sleep(0)
+            pressed = await busy_coordinator.start_camera_preview()
+            release.set()
+            await viewer
+        assert pressed.reason == "joined"
+        mock_api.auto_on.assert_awaited_once()
+
+
 class TestChangeVideoSource:
     """Video source change requires an FCM token and returns the API result."""
 
@@ -1598,13 +1664,13 @@ class TestEnsureStream:
     async def test_returns_live_session(self, coordinator):
         session = MagicMock(is_active=True)
         coordinator._stream_session = session
-        coordinator.start_camera_preview = AsyncMock()
+        coordinator._request_preview = AsyncMock()
 
         assert await coordinator.ensure_stream() is session
-        coordinator.start_camera_preview.assert_not_awaited()
+        coordinator._request_preview.assert_not_awaited()
 
     async def test_preview_failure_returns_none(self, coordinator):
-        coordinator.start_camera_preview = AsyncMock(return_value=None)
+        coordinator._request_preview = AsyncMock(return_value=None)
         assert await coordinator.ensure_stream() is None
 
     async def test_waits_for_session_after_preview(self, coordinator):
@@ -1613,19 +1679,19 @@ class TestEnsureStream:
         async def _arrive(*_args):
             coordinator._stream_session = session
 
-        coordinator.start_camera_preview = AsyncMock(return_value=MagicMock())
+        coordinator._request_preview = AsyncMock(return_value=MagicMock())
         with patch("custom_components.fermax_blue.coordinator.asyncio.sleep", side_effect=_arrive):
             assert await coordinator.ensure_stream() is session
 
     async def test_pending_preview_is_not_requested_twice(self, coordinator):
         coordinator._camera_active = True
-        coordinator.start_camera_preview = AsyncMock()
+        coordinator._request_preview = AsyncMock()
         with patch("custom_components.fermax_blue.coordinator.WEBRTC_START_TIMEOUT", 0):
             assert await coordinator.ensure_stream() is None
-        coordinator.start_camera_preview.assert_not_awaited()
+        coordinator._request_preview.assert_not_awaited()
 
     async def test_timeout_returns_none(self, coordinator):
-        coordinator.start_camera_preview = AsyncMock(return_value=MagicMock())
+        coordinator._request_preview = AsyncMock(return_value=MagicMock())
         with patch("custom_components.fermax_blue.coordinator.WEBRTC_START_TIMEOUT", 0):
             assert await coordinator.ensure_stream() is None
 
@@ -1640,13 +1706,13 @@ class TestEnsureStream:
             coordinator._stream_session = session
             return MagicMock()
 
-        coordinator.start_camera_preview = AsyncMock(side_effect=_preview)
+        coordinator._request_preview = AsyncMock(side_effect=_preview)
         viewers = [asyncio.create_task(coordinator.ensure_stream()) for _ in range(2)]
         await asyncio.sleep(0)
         release.set()
 
         assert await asyncio.gather(*viewers) == [session, session]
-        coordinator.start_camera_preview.assert_awaited_once()
+        coordinator._request_preview.assert_awaited_once()
 
 
 class TestConversationTimeoutFromPush:
@@ -1751,7 +1817,7 @@ class TestWakeProgress:
             coordinator._stream_session = None
 
     async def test_viewer_timeout_marks_failure(self, coordinator):
-        coordinator.start_camera_preview = AsyncMock(return_value=MagicMock())
+        coordinator._request_preview = AsyncMock(return_value=MagicMock())
         with patch("custom_components.fermax_blue.coordinator.WEBRTC_START_TIMEOUT", 0):
             await coordinator.ensure_stream()
         assert coordinator._wake[0] == "failed"

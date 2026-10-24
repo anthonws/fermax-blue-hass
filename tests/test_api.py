@@ -12,6 +12,7 @@ from custom_components.fermax_blue.api import (
     FermaxApiError,
     FermaxAuthError,
     FermaxBlueApi,
+    FermaxBusyError,
     OpeningRecord,
 )
 
@@ -536,6 +537,17 @@ class TestAutoOn:
             result = await authenticated_api.auto_on("device_123", "fcm_token_123")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_auto_on_busy_raises(self, authenticated_api):
+        """A 409 is told apart from other failures, with the server's reason."""
+        resp = _mock_response(409, json={"title": "Conflict"})
+
+        with (
+            patch("httpx.AsyncClient.post", return_value=resp),
+            pytest.raises(FermaxBusyError, match="Conflict"),
+        ):
+            await authenticated_api.auto_on("device_123", "fcm_token_123")
 
     @pytest.mark.asyncio
     async def test_auto_on_read_timeout_is_pending(self, authenticated_api):
