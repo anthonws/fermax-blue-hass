@@ -714,11 +714,13 @@ class TestStartFailures:
         assert await session.start() is False
         session._signaling.disconnect.assert_awaited_once()
 
-    async def test_room_join_failure_returns_false(self, tmp_path):
+    async def test_room_join_failure_stops_session(self, tmp_path):
+        """A refused start must not leave the signaling client reconnecting."""
         session = _bare_session(str(tmp_path))
         session._signaling = MagicMock(connect=AsyncMock(return_value=None), disconnect=AsyncMock())
 
         assert await session.start() is False
+        session._signaling.disconnect.assert_awaited_once()
 
     async def test_video_consume_failure_returns_false(self, tmp_path):
         session, _send_transport, patches = _mocked_session(tmp_path, receive_only=True)
@@ -729,7 +731,7 @@ class TestStartFailures:
                 stack.enter_context(p)
             assert await session.start() is False
 
-        await session.stop()
+        session._signaling.disconnect.assert_awaited_once()
 
 
 def _pickup_session(tmp_path):

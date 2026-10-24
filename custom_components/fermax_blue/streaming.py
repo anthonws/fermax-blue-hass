@@ -1015,11 +1015,14 @@ class FermaxStreamSession:
     async def start(self) -> bool:
         """Start the full streaming pipeline."""
         try:
-            return await self._start_inner()
+            if await self._start_inner():
+                return True
         except Exception:
             _LOGGER.exception("Failed to start stream session")
-            await self.stop()
-            return False
+        # A start refused half-way leaves the signaling client reconnecting and
+        # the transports open, and the caller drops the session
+        await self.stop()
+        return False
 
     async def _start_inner(self) -> bool:
         global _PYMEDIASOUP_PATCHED
