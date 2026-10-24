@@ -817,6 +817,25 @@ def _pickup_session(tmp_path):
 class TestPickupFlow:
     """produce → pickup → remote audio consume wiring (APK call-answer sequence)."""
 
+    async def test_call_ended_during_start_is_not_reported_live(self, tmp_path):
+        """end_up while the transports come up: the session must not come alive after stop()."""
+        env = _pickup_session(tmp_path)
+        ack = env.signaling.pickup.return_value
+
+        async def _pickup_then_hang_up(**_kwargs):
+            await env.session.stop()  # what the end_up handler schedules
+            return ack
+
+        env.signaling.pickup = AsyncMock(side_effect=_pickup_then_hang_up)
+
+        with contextlib.ExitStack() as stack:
+            for p in env.patches:
+                stack.enter_context(p)
+            assert await env.session.start() is False
+
+        assert env.session.is_active is False
+        assert env.session._frame_task is None
+
     async def test_pickup_creates_audio_consumer_and_stop_cleans_up(self, tmp_path):
         env = _pickup_session(tmp_path)
 
