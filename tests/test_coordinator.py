@@ -1137,7 +1137,9 @@ class TestHandleNotification:
         )
 
         assert full_coordinator._start_stream.call_args.args[0] == "room9"
-        assert full_coordinator._start_stream.call_args.kwargs["receive_only"] is False
+        assert (
+            full_coordinator._start_stream.call_args.kwargs["receive_only"] is True
+        )  # watched; the first word answers
         assert full_coordinator.doorbell_ringing is False
         assert full_coordinator._photo_fetch_pending is False
         dispatch.assert_not_called()  # no doorbell ring signal for auto-on
@@ -1160,7 +1162,9 @@ class TestHandleNotification:
         )
 
         assert full_coordinator._start_stream.call_args.args[0] == "room_switched"
-        assert full_coordinator._start_stream.call_args.kwargs["receive_only"] is False
+        assert (
+            full_coordinator._start_stream.call_args.kwargs["receive_only"] is True
+        )  # watched; the first word answers
         assert full_coordinator.doorbell_ringing is False
         dispatch.assert_not_called()  # switching camera is not a doorbell ring
         mock_api.ack_notification.assert_called_once_with("cvs1", is_call=False)
