@@ -529,7 +529,12 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
                 )
                 socket_url = DEFAULT_SIGNALING_URL
             fermax_token = data.get("FermaxToken", "")
-            receive_only = notification_type == "Call" and not attend
+            # Only an attended ring is answered on arrival. A preview (auto-on,
+            # camera switch, ring preview) is watched like the app's camera
+            # view: the viewer's first microphone packet answers it. Answering
+            # every preview at once made the panel drop later sessions within
+            # two seconds of the pickup, with no video sent.
+            receive_only = not attend
             self._background(
                 self._start_stream(
                     room_id,
@@ -854,8 +859,8 @@ class FermaxBlueCoordinator(DataUpdateCoordinator):
         session = self._stream_session
         if not session or not session.is_active:
             return False
-        # An auto-on session is answered from the start; the viewer talking is
-        # what turns it into a conversation, so the timer follows either way
+        # A preview is answered here, on the viewer's first word; the
+        # conversation then runs on the server's ConversationTimeout
         if not session.picked_up and not await session.pickup():
             return False
         self._schedule_stream_stop(max(self._stream_duration, self._conversation_timeout))
