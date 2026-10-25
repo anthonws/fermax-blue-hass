@@ -942,7 +942,7 @@ class TestCameraPreviewButton:
         mock_coordinator.start_camera_preview.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_setup_entry_creates_a_button_per_door_plus_the_fixed_four(
+    async def test_setup_entry_creates_a_button_per_door_plus_the_fixed_five(
         self, mock_coordinator
     ):
         from custom_components.fermax_blue.button import async_setup_entry
@@ -958,6 +958,7 @@ class TestCameraPreviewButton:
         ids = sorted(button.unique_id for button in added)
         assert ids == [
             "test_dev_GENERAL_open",
+            "test_dev_answer",
             "test_dev_call_guard",
             "test_dev_camera_preview",
             "test_dev_f1",
@@ -1831,3 +1832,52 @@ class TestPlatformConventions:
             EntityCategory.DIAGNOSTIC
         )
         assert FermaxSensor(mock_coordinator, "last_call").entity_category is None
+
+
+class TestAnswerButton:
+    """Answering explicitly: the conversation starts without relying on the microphone."""
+
+    def _make(self, mock_coordinator):
+        from custom_components.fermax_blue.button import FermaxAnswerButton
+
+        return FermaxAnswerButton(mock_coordinator)
+
+    @pytest.mark.asyncio
+    async def test_press_answers_the_live_call(self, mock_coordinator):
+        mock_coordinator.has_active_stream = True
+        mock_coordinator.pickup = AsyncMock(return_value=True)
+
+        await self._make(mock_coordinator).async_press()
+
+        mock_coordinator.pickup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_answer_is_a_user_error(self, mock_coordinator):
+        from homeassistant.exceptions import ServiceValidationError
+
+        mock_coordinator.has_active_stream = False
+        mock_coordinator.pickup = AsyncMock()
+
+        with pytest.raises(ServiceValidationError):
+            await self._make(mock_coordinator).async_press()
+        mock_coordinator.pickup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refused_answer_reaches_the_user(self, mock_coordinator):
+        from homeassistant.exceptions import HomeAssistantError
+
+        mock_coordinator.has_active_stream = True
+        mock_coordinator.pickup = AsyncMock(return_value=False)
+
+        with pytest.raises(HomeAssistantError):
+            await self._make(mock_coordinator).async_press()
+
+    def test_every_language_names_it(self):
+        import json
+        from pathlib import Path
+
+        folder = Path(__file__).parent.parent / "custom_components/fermax_blue/translations"
+        for path in folder.glob("*.json"):
+            data = json.loads(path.read_text())
+            assert data["entity"]["button"]["answer"]["name"], path.name
+            assert data["exceptions"]["answer_failed"]["message"], path.name

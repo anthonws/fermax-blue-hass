@@ -35,6 +35,7 @@ async def async_setup_entry(
         entities.append(FermaxCameraPreviewButton(coordinator))
         entities.append(FermaxF1Button(coordinator))
         entities.append(FermaxVideoSourceButton(coordinator))
+        entities.append(FermaxAnswerButton(coordinator))
         entities.append(FermaxCallGuardButton(coordinator))
 
     async_add_entities(entities)
@@ -133,6 +134,31 @@ class FermaxVideoSourceButton(FermaxBlueEntity, ButtonEntity):
                 translation_domain=DOMAIN, translation_key="video_source_failed"
             )
         _LOGGER.info("Video source changed: %s", result.description)
+
+
+class FermaxAnswerButton(FermaxBlueEntity, ButtonEntity):
+    """Button to answer the live call: the panel audio and the conversation time start."""
+
+    _attr_translation_key = "answer"
+
+    def __init__(self, coordinator: FermaxBlueCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{self._device_id}_answer"
+
+    async def async_press(self) -> None:
+        """Answer the call; a preview becomes a conversation.
+
+        A viewer's microphone answers on its own only on a fresh connection:
+        go2rtc keeps its connection to us across sessions, so a dashboard asks
+        for the answer explicitly.
+        """
+        if not self.coordinator.has_active_stream:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="no_active_stream"
+            )
+        if not await self.coordinator.pickup():
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="answer_failed")
+        _LOGGER.info("Call answered via button")
 
 
 class FermaxCallGuardButton(FermaxBlueEntity, ButtonEntity):
