@@ -332,6 +332,7 @@ class WebRtcPeer:
         while not self._closed:
             await asyncio.sleep(SESSION_POLL_SECONDS)
             if session.is_active:
+                self._talk_if_answered(session)
                 continue
             # The call ends on its own, as in the app. The viewer keeps the
             # last frame; closing the peer instead would make go2rtc redial and
@@ -349,7 +350,22 @@ class WebRtcPeer:
             else:
                 # A later ring or preview is watched, never answered: an open
                 # microphone must not pick up a call nobody chose to take
+                # (answering it, e.g. with the Answer button, feeds it again)
                 self._mic_routed = True
+                self._talking = False
+
+    def _talk_if_answered(self, session: FermaxStreamSession) -> None:
+        """Feed the microphone into a call someone answered (e.g. the Answer button).
+
+        go2rtc keeps this connection across sessions, so a viewer pressing Talk
+        after a camera switch reaches us on the same peer, where the microphone
+        no longer answers on its own. Once the call is answered it is meant to
+        be talked into.
+        """
+        if session.picked_up and not self._talking and self._mic_track is not None:
+            session.set_audio_source(self._mic_track)
+            self._talking = True
+            _LOGGER.info("Viewer microphone connected to the answered call")
 
     def _attach(self, session: FermaxStreamSession) -> None:
         """Switch the tracks to a live session."""

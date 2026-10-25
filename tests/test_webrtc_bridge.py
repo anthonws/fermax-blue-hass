@@ -409,19 +409,27 @@ class TestSessionAttachment:
         second.set_audio_source.assert_called_once_with(mic)
         await peer.close()
 
-    async def test_a_watching_viewer_never_talks_into_an_answered_room(self):
+    async def test_answer_button_after_a_switch_feeds_the_microphone(self):
+        # go2rtc keeps one connection across the switch: Talk reaches us on the
+        # same peer, where only an explicit answer may open the microphone
         first = _session()
         peer, coordinator = await self._attached(first)
-        peer._mic_track = MagicMock(kind="audio")
+        mic = MagicMock(kind="audio")
+        peer._mic_track = mic
         second = _session()
-        second.picked_up = True
+        second.picked_up = False
         first.is_active = False
         coordinator.stream_session = second
         with patch.object(webrtc_bridge, "SESSION_POLL_SECONDS", 0):
             for _ in range(6):
                 await asyncio.sleep(0)
-        assert peer._session is second
-        second.set_audio_source.assert_not_called()
+            assert peer._session is second
+            second.set_audio_source.assert_not_called()  # watched, not answered
+
+            second.picked_up = True  # the Answer button
+            for _ in range(4):
+                await asyncio.sleep(0)
+        second.set_audio_source.assert_called_once_with(mic)
         await peer.close()
 
 

@@ -165,6 +165,9 @@
       "video_source": {
         "name": "Camera wisselen"
       },
+      "answer": {
+        "name": "Oproep beantwoorden"
+      },
       "call_guard": {
         "name": "Portier bellen"
       }
@@ -196,6 +199,9 @@
     },
     "video_source_failed": {
       "message": "De intercom heeft het wisselen van camera geweigerd."
+    },
+    "answer_failed": {
+      "message": "De intercom heeft de oproep niet beantwoord."
     },
     "f1_failed": {
       "message": "De intercom heeft de F1-opdracht niet geaccepteerd."

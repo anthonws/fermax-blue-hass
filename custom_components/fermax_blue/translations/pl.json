@@ -165,6 +165,9 @@
       "video_source": {
         "name": "Przełącz kamerę"
       },
+      "answer": {
+        "name": "Odbierz połączenie"
+      },
       "call_guard": {
         "name": "Zadzwoń do portiera"
       }
@@ -196,6 +199,9 @@
     },
     "video_source_failed": {
       "message": "Domofon odrzucił zmianę kamery."
+    },
+    "answer_failed": {
+      "message": "Domofon nie odebrał połączenia."
     },
     "f1_failed": {
       "message": "Domofon nie przyjął polecenia F1."

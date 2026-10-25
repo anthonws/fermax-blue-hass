@@ -165,6 +165,9 @@
       "video_source": {
         "name": "Cambia telecamera"
       },
+      "answer": {
+        "name": "Rispondi alla chiamata"
+      },
       "call_guard": {
         "name": "Chiama portiere"
       }
@@ -196,6 +199,9 @@
     },
     "video_source_failed": {
       "message": "Il videocitofono ha rifiutato il cambio di telecamera."
+    },
+    "answer_failed": {
+      "message": "Il citofono non ha risposto alla chiamata."
     },
     "f1_failed": {
       "message": "Il videocitofono non ha accettato il comando F1."

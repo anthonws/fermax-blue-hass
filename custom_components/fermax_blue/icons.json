@@ -74,6 +74,9 @@
       "video_source": {
         "default": "mdi:camera-switch"
       },
+      "answer": {
+        "default": "mdi:phone-in-talk"
+      },
       "call_guard": {
         "default": "mdi:shield-account"
       }

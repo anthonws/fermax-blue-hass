@@ -165,6 +165,9 @@
       "video_source": {
         "name": "Cambiar cámara"
       },
+      "answer": {
+        "name": "Contestar llamada"
+      },
       "call_guard": {
         "name": "Llamar portero"
       }
@@ -196,6 +199,9 @@
     },
     "video_source_failed": {
       "message": "El videoportero rechazó el cambio de cámara."
+    },
+    "answer_failed": {
+      "message": "El intercomunicador no contestó la llamada."
     },
     "f1_failed": {
       "message": "El videoportero no aceptó el comando F1."
